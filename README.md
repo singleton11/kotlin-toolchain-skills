@@ -9,6 +9,7 @@ Skills are self-contained folders packaging instructions and resources for AI ag
 ## Skills
 
 - `kotlin-toolchain` — build, run, test, package, lint/check, manage dependencies, and configure Kotlin/Java projects with Kotlin Toolchain. Does not apply to Gradle/Maven projects.
+- `gradle-to-kotlin-toolchain-plugin` — port a Gradle plugin to a Kotlin Toolchain local plugin. Covers the investigation workflow, the Gradle → Toolchain concept-mapping table, architectural mismatches that need redesign (no `project.version`, no `-P` properties, no Groovy hooks), and common pitfalls drawn from real conversions.
 
 ## Installation
 
