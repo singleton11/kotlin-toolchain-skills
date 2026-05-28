@@ -11,6 +11,7 @@ Skills are self-contained folders packaging instructions and resources for AI ag
 - `kotlin-toolchain` — build, run, test, package, lint/check, manage dependencies, and configure Kotlin/Java projects with Kotlin Toolchain. Does not apply to Gradle/Maven projects.
 - `kotlin-toolchain-plugin-authoring` — author a Kotlin Toolchain local plugin from scratch. Covers `@Configurable Settings`, `@TaskAction`, `@Input`/`@Output`, `plugin.yaml` tasks/commands/generated wiring, file-based task communication, env-var overrides, and the limitations to design around.
 - `gradle-to-kotlin-toolchain-plugin` — port an existing Gradle plugin to a Kotlin Toolchain local plugin. Covers the investigation workflow, the Gradle → Toolchain concept-mapping table, architectural mismatches that need redesign (no `project.version`, no `-P` properties, no Groovy hooks), and common pitfalls drawn from real conversions.
+- `gradle-to-kotlin-toolchain-project` — migrate an entire Gradle Kotlin/JVM project to Kotlin Toolchain. Covers the inventory + plugin-set decision + CI rewrite workflow, the set of local plugins that typically replace Gradle plugins with no native (axion-release, jib, detekt, ktlint, the `application` plugin's `build/libs/<name>.jar`), the Dependabot stub-buildfile trick, and project-level mismatches to watch (detekt type-resolution default, no `module.yaml` interpolation, root-module task-loop traps).
 
 ## Installation
 
