@@ -58,7 +58,7 @@ For a typical Gradle Kotlin/JVM service, the plugin set you'll end up with is:
 | `org.jetbrains.kotlin.jvm`, `kotlin.plugin.serialization` | Native (`settings.jvm.jdk`, `settings.kotlin.serialization: json`) | Use `$libs.*` for Kotlin libs if you want pin control; otherwise the toolchain default applies. |
 | `application` plugin (mainClass + `build/libs/<name>.jar`) | `settings.jvm.mainClass` covers the entry point. The JAR's *location* needs a small `package` local plugin so CI has a stable upload path — see [references/examples.md](references/examples.md). |
 | `pl.allegro.tech.build.axion-release` (or similar git-tag versioning) | A `release` local plugin (JGit-based). Vendor one if available; otherwise see the `gradle-to-kotlin-toolchain-plugin` skill. Publishes the version as a file (e.g. `META-INF/release/version.txt`) under `generated.resources`. |
-| `com.google.cloud.tools.jib` | A `jib` local plugin wrapping `jib-core` directly. The community sample at the spring-petclinic Amper repo is a good starting point; you will likely need to extend `ContainerSettings` with `ports`, `environment`, `user` (the sample omits these). |
+| `com.google.cloud.tools.jib` | A `jib` local plugin wrapping `jib-core` directly. The community sample at the spring-petclinic Amper repo is a good starting point; you will likely need to extend `ContainerSettings` with `ports`, `environment`, `user` (the sample omits these), **and verify it actually applies the tag list** — a bare `Containerizer.to(image)` pushes only the image's implicit `latest`, so add `Containerizer.withAdditionalTag(...)` per configured tag and read a CI override (comma-separated) from an env var. |
 | `io.gitlab.arturbosch.detekt` | A `detekt` local plugin that subprocess-launches `detekt-cli`. Vendor from `amper/build-sources/detekt/` and **change the type-resolution default** — see "Mismatches to watch" below. |
 | `org.jlleitschuh.gradle.ktlint` | A `ktlint` local plugin, hand-written along the same shape as detekt (subprocess-launching `ktlint-cli`). |
 | Custom `generateXyz.properties` tasks | An additional `@TaskAction` on the relevant plugin (usually the release plugin). Output dir wired into `generated.resources`. |
@@ -106,8 +106,8 @@ The migration mostly *simplifies* CI workflows:
 - **Drop `actions/setup-java`.** The `./kotlin` wrapper auto-provisions its own JDK on first run. Set `KOTLIN_CLI_NO_WELCOME_BANNER: "1"` at the job level to keep logs clean.
 - **`./gradlew build && ./gradlew check`** → `./kotlin build && ./kotlin check`. `kotlin check` runs every plugin's `checks:` registrations (detekt + ktlint + tests).
 - **`./gradlew release`** → `./kotlin do release` (the release plugin exposes it as a command).
-- **`./gradlew currentVersion -q | …`** → `./kotlin do currentVersion | tail -n1` (or similar — depends on how the local release plugin formats output).
-- **`./gradlew jib -Djib.to.tags=…`** → `./kotlin do jib`. Dynamic tags can be passed via env vars consumed inside the plugin (Toolchain has no `-P`/`-D` equivalent — see the mismatches section).
+- **`./gradlew currentVersion -q | …`** → resolve the version *without* `| tail -n1` (see "Capturing a command's output value" under Mismatches): read the tag the release just made (`git describe --tags --exact-match HEAD`) or a file the plugin writes. `tail -n1` returns the toolchain's `<task> successful` banner, not the version.
+- **`./gradlew jib -Djib.to.tags=…`** → `./kotlin do jib` with the tags supplied through an env var the plugin reads (no `-P`/`-D`/`--setting`). Confirm the plugin actually *applies* the tag list — see the jib row in the plugin-set table.
 - **Artefact upload path** must change. Gradle's `build/libs/<name>.jar` is gone; the Toolchain's `jarJvm` task writes to a Toolchain-internal path. **Author a `package` local plugin** that stages the JAR at `${module.rootDir}/build/libs/${module.name}.jar` so CI's `actions/upload-artifact` line stays simple. See [references/examples.md](references/examples.md) for the 30-line plugin.
 
 ### Phase 5 — Validate end-to-end
@@ -170,7 +170,16 @@ Plugins are isolated; one local plugin cannot declare a dependency on another lo
 
 ### No `-P` / `-D` CLI overrides
 
-Toolchain has no Gradle-equivalent `-Pkey=value` or `-Dkey=value` for overriding plugin settings from the CLI. For ephemeral overrides (force-version, skip-checks), read environment variables inside the `@TaskAction`. See the `gradle-to-kotlin-toolchain-plugin` skill's "Architectural mismatches" section for the pattern.
+Toolchain has no Gradle-equivalent `-Pkey=value` or `-Dkey=value` for overriding plugin settings from the CLI, and you can't count on a `--setting` flag either (the pinned CLI may reject it outright). For ephemeral overrides (force-version, skip-checks, dynamic image tags), read environment variables inside the `@TaskAction`. See the `gradle-to-kotlin-toolchain-plugin` skill's "Architectural mismatches" section for the pattern.
+
+### Capturing a command's output value (`./kotlin do …` stdout is not a clean channel)
+
+A `@TaskAction`'s `println` is **not** a machine-readable channel. The toolchain renders task stdout inside a decorated log line — `<ts> INFO :<module>:<task>@<plugin> <value>` — and prints a trailing `<task> successful` banner, so `./kotlin do currentVersion | tail -n1` yields `currentVersion successful`, not the version (and lowering `--log-level` to `error`/`off` drops the value line entirely, since it is emitted at INFO). Capture a value robustly by either:
+
+- **Reading a side channel the plugin writes** — have the task write the value to a file named by an env var (e.g. `RELEASE_VERSION_FILE`) and `cat` it. Most decoupled: the captured value matches what the plugin stamps into artifacts.
+- **Reading the git state the command produced** — for a release tag, `version=$(git describe --tags --exact-match HEAD)` then strip the prefix; no plugin-output parsing at all.
+
+If you must parse stdout, match the task-coordinate line instead of taking the last one: `awk '/<task>@<plugin>/ { v = $NF } END { print v }'`.
 
 ### Test resource conflicts with `generated.resources`
 
