@@ -182,14 +182,14 @@ This serves three purposes at once: it proves the port works, it documents the m
 Every conversion's README should have:
 
 1. One-line description naming the source plugin and stating this is a port.
-3. Quick-start with `./kotlin do <command>` examples.
-4. `module.yaml` configuration block with all settings and their defaults.
-5. **Runtime overrides table** mapping Gradle `-P` flags to env vars.
-6. **What's not in MVP** section listing deferred features.
-7. **Toolchain limitations worth knowing** — plugins are local-only, module-level, no `${...}` in `module.yaml`. This sets correct expectations.
+2. Quick-start with `./kotlin do <command>` examples.
+3. `module.yaml` configuration block with all settings and their defaults.
+4. **Runtime overrides table** mapping Gradle `-P` flags to env vars.
+5. **What's not in MVP** section listing deferred features.
+6. **Toolchain limitations worth knowing** — plugins are local-only, module-level, no `${...}` in `module.yaml`. This sets correct expectations.
 
 ## Additional resources
 
-- For concrete code patterns lifted from a real conversion (axion-release-plugin → kotlin-toolchain-release-plugin), see [references/examples.md](references/examples.md).
+- For concrete code patterns lifted from a real conversion (the `axion-release` Gradle plugin ported to a Toolchain local plugin), see [references/examples.md](references/examples.md).
 - For general Kotlin Toolchain usage (building, testing, dependencies, multiplatform), use the companion `kotlin-toolchain` skill.
 - Toolchain plugin docs: <https://kotlin-toolchain.org/dev/user-guide/plugins/>

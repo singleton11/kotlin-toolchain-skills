@@ -443,13 +443,14 @@ jobs:
     env:
       KOTLIN_CLI_NO_WELCOME_BANNER: "1"
     steps:
-      - name: Install doctl
-        uses: digitalocean/action-doctl@v2
-        with:
-          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
-
-      - name: Log in to DigitalOcean Docker Registry
-        run: doctl registry login
+      # Log in to whatever container registry the image plugin pushes to.
+      # (Swap this step for your provider's login action / CLI.)
+      - name: Log in to container registry
+        run: echo "$REGISTRY_TOKEN" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
+        env:
+          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
 
       - uses: actions/checkout@v6
         with:
@@ -467,7 +468,9 @@ jobs:
       - name: Resolve current release version
         id: tag_version
         run: |
-          current_version=$(./kotlin do currentVersion 2>/dev/null | tail -n1)
+          # Read the tag the release just created — do NOT parse `./kotlin do currentVersion`
+          # stdout (it is a decorated log line and ends with a `<task> successful` banner).
+          current_version=$(git describe --tags --exact-match HEAD | sed 's/^v//')
           echo "Version set to: $current_version"
           echo "version=$current_version" >> $GITHUB_OUTPUT
 
@@ -477,8 +480,8 @@ jobs:
 
 Notes:
 
-- `./kotlin do currentVersion` typically prints version-related INFO log lines around the actual version; pipe through `tail -n1` (or a tighter awk filter) to extract the value.
-- Dynamic tags for the Docker image are usually pushed into the jib plugin via env vars consumed inside the task action (Toolchain has no `-Pkey=value` for CLI overrides). Document the env var in the plugin's README.
+- Resolve the released version from a side channel, not `./kotlin do <cmd>` stdout — the toolchain wraps task output in a log line and appends a `<task> successful` banner, so `| tail -n1` captures the banner, not the value. Read the git tag (above) or have the plugin write the version to a file named by an env var and `cat` it.
+- Dynamic tags for the image are pushed into the image plugin via env vars consumed inside the task action (Toolchain has no `-Pkey=value` for CLI overrides). Document the env var in the plugin's README.
 
 ## 12. `.github/dependabot.yml` — group new local-plugin deps
 

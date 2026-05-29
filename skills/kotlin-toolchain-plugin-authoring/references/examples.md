@@ -1,6 +1,6 @@
 # Plugin authoring patterns — concrete code
 
-Ready-to-adapt snippets for writing a Kotlin Toolchain local plugin. Adapt names, packages, imports, and types to your domain. Every pattern below appears in `kotlin-toolchain-release-plugin`, which can be read as a complete worked example.
+Ready-to-adapt snippets for writing a Kotlin Toolchain local plugin. Adapt names, packages, imports, and types to your domain. The running example throughout is a release / version-stamping plugin — it happens to exercise every plugin-authoring mechanism (settings, task actions, `@Input`/`@Output`, generated resources, env-var overrides) in one place; map the shapes onto your own plugin's domain.
 
 ## 1. `project.yaml` — registering the plugin
 

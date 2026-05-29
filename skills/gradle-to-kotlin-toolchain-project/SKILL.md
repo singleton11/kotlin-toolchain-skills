@@ -1,13 +1,13 @@
 ---
 name: gradle-to-kotlin-toolchain-project
-description: Migrate an entire Gradle Kotlin/JVM project to Kotlin Toolchain — module.yaml + project.yaml, dependency catalog reuse, CI rewrite, and the set of local plugins that replace Gradle plugins with no native Toolchain equivalent (axion-release, jib, detekt, ktlint, the `application` plugin, custom `processResources` tasks). TRIGGER when the user asks to convert, migrate, port, or move a Gradle project (build.gradle / build.gradle.kts at the repo root) to Kotlin Toolchain or Amper; when the repo currently has Gradle wrapper + build script and the user wants to switch the whole build, not just port one plugin; when the conversation references replacing Gradle's `application` plugin, axion-release, jib, detekt, ktlint with Toolchain equivalents at the project level; when adapting an existing CI pipeline (`./gradlew build`, `./gradlew check`, `./gradlew release`) to `./kotlin` commands. SKIP for porting a single Gradle plugin in isolation (use the `gradle-to-kotlin-toolchain-plugin` skill), for authoring a new Toolchain plugin from scratch (use `kotlin-toolchain-plugin-authoring`), and for general Kotlin Toolchain project work where Gradle is already gone (use `kotlin-toolchain`).
+description: Migrate an entire Gradle Kotlin/JVM project to Kotlin Toolchain — module.yaml + project.yaml, dependency-catalog reuse, CI rewrite, and the local plugins that replace Gradle plugins with no native Toolchain equivalent. TRIGGER when the user asks to convert, migrate, port, or move a Gradle project (build.gradle / build.gradle.kts at the repo root) to Kotlin Toolchain or Amper; when the repo currently has a Gradle wrapper + build script and the user wants to switch the whole build, not just port one plugin; when the conversation references replacing Gradle plugins (the `application` plugin, git-tag versioning such as axion-release, container-image building such as jib, linters such as detekt/ktlint, custom `processResources`/codegen tasks) with Toolchain equivalents at the project level; when adapting an existing CI pipeline (`./gradlew build`, `./gradlew check`, `./gradlew release`) to `./kotlin` commands. SKIP for porting a single Gradle plugin in isolation (use the `gradle-to-kotlin-toolchain-plugin` skill), for authoring a new Toolchain plugin from scratch (use `kotlin-toolchain-plugin-authoring`), and for general Kotlin Toolchain project work where Gradle is already gone (use `kotlin-toolchain`).
 ---
 
 # Gradle → Kotlin Toolchain Project Migration
 
 Migrating a whole Gradle Kotlin/JVM project to Kotlin Toolchain is two distinct exercises stapled together: a mostly-mechanical **translation** of dependencies and configuration, plus a non-trivial set of **plugin replacements** for everything Gradle did via plugins that Toolchain has no native answer for. This skill is the project-level playbook; it leans on the companion skills for the plugin pieces.
 
-Read [references/examples.md](references/examples.md) for ready-to-adapt code: a Ktor-app `module.yaml`, multi-plugin `project.yaml`, the smallest hand-written plugin (a `package` plugin producing a stable `build/libs/` artifact), and CI workflow templates.
+Read [references/examples.md](references/examples.md) for ready-to-adapt code: a JVM-app `module.yaml`, a multi-plugin `project.yaml`, the smallest hand-written plugin (a `package` plugin producing a stable `build/libs/` artifact), and CI workflow templates. That reference code is drawn from one real migration — treat it as a template to adapt, not a fixed recipe.
 
 The companion skills handle the plugin-shaped subproblems:
 
@@ -35,7 +35,7 @@ Before any YAML is written, produce a written inventory of the existing build:
   - **Native** — covered by `module.yaml` directly (`org.jetbrains.kotlin.jvm`, `org.jetbrains.kotlin.plugin.serialization`, the `application` plugin's `mainClass`, JDK toolchains, BOM imports, scope qualifiers).
   - **Local plugin** — needs reimplementation (typical: `axion-release`, `jib`, `detekt`, `ktlint`, anything that wires custom tasks into `check`).
 - **All custom tasks** registered in the build script (`tasks.register("...")`, `tasks.named("...")`). Note their inputs, outputs, and what wires them into the build graph (`processResources.dependsOn(...)`, `check.dependsOn(...)`). Each one is a future `@TaskAction` in some plugin.
-- **All source-code dependencies on build-generated artefacts.** Grep `src/` for resource names that are produced by custom tasks. (Canonical example: `MetaReleaseService` reading `release.properties` from the classpath, where the file is written by a custom `generateReleaseProperties` Gradle task.) Each of these is a constraint the migration must honour without source changes.
+- **All source-code dependencies on build-generated artefacts.** Grep `src/` for resource names that are produced by custom tasks (e.g. a service that reads a `release.properties` / `version.txt` off the classpath, where the file is written by a custom `generate…` Gradle task). Each of these is a constraint the migration must honour without source changes.
 - **`gradle/libs.versions.toml`** — note which `[versions]` and `[plugins]` entries are *only* used by Gradle plugins (those become dead weight to remove later).
 - **CI workflows** — every `./gradlew <task>` invocation must map to a `./kotlin` command or be replaced. Note artefact upload paths (typically `build/libs/`), version-extraction shell pipelines, and any `-P` property flags.
 
@@ -51,19 +51,18 @@ Gradle projects use Maven layout (`src/main/kotlin`, `src/main/resources`, `src/
 
 #### Plugin set
 
-For a typical Gradle Kotlin/JVM service, the plugin set you'll end up with is:
+Sort every Gradle plugin from the Phase 1 inventory into one of three buckets — **drop**, **use Toolchain native**, or **reimplement as a local plugin** — never "keep using the Gradle plugin" (Toolchain cannot consume Gradle plugins). The table below lists the categories that recur in JVM projects, with representative plugins as examples; your project will hit some subset, not all of them.
 
-| Gradle plugin / feature | Replacement | Notes |
+| Gradle plugin / feature (examples) | Replacement | Notes |
 |---|---|---|
-| `org.jetbrains.kotlin.jvm`, `kotlin.plugin.serialization` | Native (`settings.jvm.jdk`, `settings.kotlin.serialization: json`) | Use `$libs.*` for Kotlin libs if you want pin control; otherwise the toolchain default applies. |
-| `application` plugin (mainClass + `build/libs/<name>.jar`) | `settings.jvm.mainClass` covers the entry point. The JAR's *location* needs a small `package` local plugin so CI has a stable upload path — see [references/examples.md](references/examples.md). |
-| `pl.allegro.tech.build.axion-release` (or similar git-tag versioning) | A `release` local plugin (JGit-based). Vendor one if available; otherwise see the `gradle-to-kotlin-toolchain-plugin` skill. Publishes the version as a file (e.g. `META-INF/release/version.txt`) under `generated.resources`. |
-| `com.google.cloud.tools.jib` | A `jib` local plugin wrapping `jib-core` directly. The community sample at the spring-petclinic Amper repo is a good starting point; you will likely need to extend `ContainerSettings` with `ports`, `environment`, `user` (the sample omits these), **and verify it actually applies the tag list** — a bare `Containerizer.to(image)` pushes only the image's implicit `latest`, so add `Containerizer.withAdditionalTag(...)` per configured tag and read a CI override (comma-separated) from an env var. |
-| `io.gitlab.arturbosch.detekt` | A `detekt` local plugin that subprocess-launches `detekt-cli`. Vendor from `amper/build-sources/detekt/` and **change the type-resolution default** — see "Mismatches to watch" below. |
-| `org.jlleitschuh.gradle.ktlint` | A `ktlint` local plugin, hand-written along the same shape as detekt (subprocess-launching `ktlint-cli`). |
-| Custom `generateXyz.properties` tasks | An additional `@TaskAction` on the relevant plugin (usually the release plugin). Output dir wired into `generated.resources`. |
+| Kotlin/JVM + serialization (`org.jetbrains.kotlin.jvm`, `kotlin.plugin.serialization`) | **Native** (`settings.jvm.jdk`, `settings.kotlin.serialization: json`) | Use `$libs.*` for Kotlin libs if you want pin control; otherwise the toolchain default applies. |
+| The `application` plugin (mainClass + `build/libs/<name>.jar`) | **Native** for the entry point (`settings.jvm.mainClass`); a small **`package` local plugin** for the JAR's *location* so CI has a stable upload path — see [references/examples.md](references/examples.md). |
+| Git-tag versioning (e.g. `axion-release`) | A **`release` local plugin** (typically JGit-based). Vendor one if it exists; otherwise port it via the `gradle-to-kotlin-toolchain-plugin` skill. Publishes the version as a file (e.g. `META-INF/<group>/version.txt`) under `generated.resources`. |
+| Container-image building (e.g. `jib`) | A **local plugin** wrapping the tool's own library (e.g. `jib-core`) directly. When vendoring a community sample, expect to extend its settings (ports, environment, user are commonly omitted) **and verify it applies every configured tag** — a bare push often emits only the implicit `latest`; read CI tag overrides from an env var (Toolchain has no `-P`/`-D`). |
+| Linters (e.g. `detekt`, `ktlint`) | A **local plugin** that subprocess-launches the tool's CLI. Vendor a known-good one where it exists; otherwise hand-write along the same shape. **Re-check the vendored plugin's defaults against the Gradle plugin** — see "Mismatches to watch". |
+| Custom `generateXyz` / `processResources` tasks | An additional **`@TaskAction`** on the relevant plugin (often the release plugin). Output dir wired into `generated.resources`. |
 
-Each plugin is its own `jvm/amper-plugin` module under `plugins/<name>/`. Wire them all from `project.yaml`:
+Each local plugin is its own `jvm/amper-plugin` module under `plugins/<name>/`. Wire them all from `project.yaml`:
 
 ```yaml
 modules:
@@ -80,10 +79,7 @@ plugins:
 
 For each candidate local plugin, decide between **vendor** (copy a known-working source from a public repo), **author** (write from scratch following `kotlin-toolchain-plugin-authoring`), or **extend** (vendor and add fields).
 
-Default scope for a single migration PR:
-- Vendor the release, jib, detekt plugins from known-good sources.
-- Author the ktlint and `package` plugins.
-- Defer anything else (e.g. publishing to Maven Central) to a follow-up.
+A reasonable default for a single migration PR: vendor the plugins that already have a known-good Toolchain source, author the small or bespoke ones (a `package` plugin, a thin linter wrapper), and defer anything non-essential (e.g. publishing to Maven Central) to a follow-up.
 
 ### Phase 3 — Implement
 
@@ -104,10 +100,10 @@ Recommended order, top-down so each step is testable:
 The migration mostly *simplifies* CI workflows:
 
 - **Drop `actions/setup-java`.** The `./kotlin` wrapper auto-provisions its own JDK on first run. Set `KOTLIN_CLI_NO_WELCOME_BANNER: "1"` at the job level to keep logs clean.
-- **`./gradlew build && ./gradlew check`** → `./kotlin build && ./kotlin check`. `kotlin check` runs every plugin's `checks:` registrations (detekt + ktlint + tests).
+- **`./gradlew build && ./gradlew check`** → `./kotlin build && ./kotlin check`. `kotlin check` runs every plugin's `checks:` registrations (your linters + tests).
 - **`./gradlew release`** → `./kotlin do release` (the release plugin exposes it as a command).
 - **`./gradlew currentVersion -q | …`** → resolve the version *without* `| tail -n1` (see "Capturing a command's output value" under Mismatches): read the tag the release just made (`git describe --tags --exact-match HEAD`) or a file the plugin writes. `tail -n1` returns the toolchain's `<task> successful` banner, not the version.
-- **`./gradlew jib -Djib.to.tags=…`** → `./kotlin do jib` with the tags supplied through an env var the plugin reads (no `-P`/`-D`/`--setting`). Confirm the plugin actually *applies* the tag list — see the jib row in the plugin-set table.
+- **`./gradlew jib -Djib.to.tags=…`** → `./kotlin do jib` with the tags supplied through an env var the plugin reads (no `-P`/`-D`/`--setting`). Confirm the plugin actually *applies* the tag list — see the container-image row in the plugin-set table.
 - **Artefact upload path** must change. Gradle's `build/libs/<name>.jar` is gone; the Toolchain's `jarJvm` task writes to a Toolchain-internal path. **Author a `package` local plugin** that stages the JAR at `${module.rootDir}/build/libs/${module.name}.jar` so CI's `actions/upload-artifact` line stays simple. See [references/examples.md](references/examples.md) for the 30-line plugin.
 
 ### Phase 5 — Validate end-to-end
@@ -117,8 +113,8 @@ Run each user-facing command at least once locally. Capture the outputs in the P
 ```sh
 ./kotlin show modules            # project model loads, all expected modules listed
 ./kotlin clean && ./kotlin build # main build path is clean
-./kotlin test                    # if local environment supports it (see mongo:3.2 caveat below)
-./kotlin check                   # detekt + ktlint + tests; expect zero violations after Phase 3
+./kotlin test                    # if local environment supports it (see host-incompatible containers below)
+./kotlin check                   # linters + tests; expect zero violations after Phase 3
 ./kotlin do currentVersion       # release plugin reachable
 ./kotlin do jib                  # or jibBuildTar to avoid pushing during local validation
 ./kotlin do package              # if a package plugin exists; verify build/libs/<name>.jar exists with the right Main-Class manifest
@@ -137,7 +133,7 @@ A documented Toolchain limitation that comes up immediately in consumer config. 
 
 ### Module name comes from the directory name
 
-There is no `name:` field in `module.yaml`. The module name is the basename of the directory containing the file. In CI this affects task output paths: `actions/checkout` clones the repo at a directory whose basename is the GitHub repo name, so `${module.name}` resolves to e.g. `sdkman-broker-2` in upstream CI but `17ef` in a worktree. Any path you encode in plugin task outputs should use `${module.name}` so it follows the directory.
+There is no `name:` field in `module.yaml`. The module name is the basename of the directory containing the file. In CI this affects task output paths: `actions/checkout` clones the repo into a directory whose basename is the GitHub repo name, while a local worktree or a clone under a different folder name resolves `${module.name}` to something else entirely. Never hardcode the module name into a path you encode in plugin task outputs — use `${module.name}` so it follows the directory.
 
 ### Plugin settings need `enabled: true` *or* the shorthand `<plugin>: enabled`
 
@@ -154,15 +150,17 @@ plugins:
 
 Providing settings *without* `enabled: true` silently does **not** enable the plugin — Toolchain warns ("Plugin X is not enabled, but has some explicit configuration") and skips it. Always enable explicitly when any setting is present.
 
-### Detekt type resolution defaults differ from Gradle
+### A vendored linter plugin can carry different defaults than the Gradle plugin
 
-The vendored upstream detekt plugin (`amper/build-sources/detekt/`) passes `--classpath` to detekt-cli unconditionally, enabling **type resolution**. Gradle's default `detekt` task does **not** enable type resolution. The result: a migration that uses the vendored plugin as-is will surface 10–100 "new" detekt violations that the Gradle build silently ignored (notably from the `UnreachableCode` rule on elvis-with-return patterns).
+A subprocess-launching linter plugin you vendor may enable stricter analysis than the Gradle plugin did, surfacing a wave of "new" violations the Gradle build silently ignored. Diff the flags the vendored plugin passes against what the Gradle plugin's default task passed, and add an opt-in setting for anything stricter so the default matches the old behaviour.
 
-**Fix**: when vendoring the detekt plugin, add a `useTypeResolution: Boolean` setting to its `@Configurable Settings` interface with a `get() = false` default. Gate the `--classpath` flag on this setting. This matches Gradle parity by default; consumers who want the stronger checks opt in. See [references/examples.md](references/examples.md) for the full patch.
+The canonical instance: the upstream detekt plugin (`amper/build-sources/detekt/`) passes `--classpath` to `detekt-cli` unconditionally, enabling **type resolution**, while Gradle's default `detekt` task does not. Used as-is it surfaces violations Gradle never reported (notably `UnreachableCode` on elvis-with-return patterns).
+
+**Fix**: add a `useTypeResolution: Boolean` setting (`get() = false`) to the plugin's `@Configurable Settings` and gate the `--classpath` flag on it. That matches Gradle parity by default; consumers who want the stronger checks opt in. See [references/examples.md](references/examples.md) for the full patch.
 
 ### No dependency exclusions
 
-`Amper has no equivalent of Gradle's `exclude(group, module)` for transitive dependency exclusions. If the source build excluded e.g. `kotlinx-coroutines-core` from an Exposed dependency, that exclusion silently disappears under Toolchain — the library lands on the runtime classpath. Document the trade-off in the PR (usually a few hundred KB of unused classes; rarely a behavioural issue) and move on.
+Toolchain has no equivalent of Gradle's `exclude(group, module)` for transitive dependency exclusions. If the source build excluded e.g. `kotlinx-coroutines-core` from one of its dependencies, that exclusion silently disappears under Toolchain — the library lands on the runtime classpath. Document the trade-off in the PR (usually a few hundred KB of unused classes; rarely a behavioural issue) and move on.
 
 ### No plugin-to-plugin dependencies
 
@@ -198,9 +196,9 @@ Dependabot's gradle-ecosystem file fetcher requires a `build.gradle` or `build.g
 
 The Toolchain ignores this file entirely.
 
-### mongo:3.2 and other amd64-only images won't run on Apple Silicon
+### amd64-only container images won't run on Apple Silicon
 
-Older images pinned by testcontainers (`mongo:3.2` is the canonical example) are amd64-only and crash immediately under Rosetta/QEMU on M-series Macs (`runtime: failed to create new OS thread (have 2 already; errno=22)`). This is **unchanged by the migration** — the same image fails identically under `./gradlew check`. Flag it in the PR's Test plan as a pre-existing host incompatibility, not a regression. CI on `ubuntu-latest` (amd64) is unaffected.
+Older images pinned by testcontainers (e.g. `mongo:3.2`) are amd64-only and crash immediately under Rosetta/QEMU on M-series Macs (`runtime: failed to create new OS thread (have 2 already; errno=22)`). This is **unchanged by the migration** — the same image fails identically under `./gradlew check`. Flag it in the PR's Test plan as a pre-existing host incompatibility, not a regression. CI on `ubuntu-latest` (amd64) is unaffected.
 
 ## What goes in the PR
 
@@ -219,7 +217,7 @@ A whole-project migration PR is large; a clear description shortens review by ho
 - **Forgetting `enabled: true`.** If a plugin shows up under `./kotlin show modules` but its task never runs, check that the consumer's `module.yaml` has `enabled: true` (not just plugin settings — settings without `enabled` are silently ignored).
 - **Committing `build/`.** `kotlin build` creates `build/`. Add it to `.gitignore` early (drop the old `.gradle/` entry, add `build/` if not already there).
 - **Cycle detected on `writeVersion`.** If the release plugin is enabled on the *root* module (where `${module.rootDir}` is the project root that contains `build/`), Toolchain's dependency inference may treat all build outputs as inputs of any task that takes `@Input moduleRootDir: Path`. Patch the release plugin's `moduleRootDir` parameters with `@Input(inferTaskDependency = false)`.
-- **Hardcoded `1.23.8` everywhere.** Detekt-cli, ktlint-cli, jib-core, and JGit versions get hardcoded into plugin YAMLs during vendoring. Sweep them into `gradle/libs.versions.toml` and use `$libs.*` references; otherwise Dependabot can't track them.
+- **Hardcoded tool versions in plugin YAMLs.** Vendoring drops literal versions (the linter CLIs, the image-builder library, JGit, etc.) into `module.yaml`/`plugin.yaml`. Sweep every one into `gradle/libs.versions.toml` and use `$libs.*` references; otherwise Dependabot can't track them.
 - **String interpolation into Maven coordinates.** `plugin.yaml` does not allow `${pluginSettings.version}` *inside* a Maven coordinate string (`com.example:foo:${...}` fails with "Value of type 'ShadowDependency' doesn't support string interpolation"). Either hardcode the version in `plugin.yaml` or use a catalog reference (`$libs.foo`).
 
 ## Additional resources

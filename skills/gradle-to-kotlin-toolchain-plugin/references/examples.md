@@ -1,6 +1,6 @@
 # Conversion patterns — concrete code
 
-Patterns lifted from a real conversion (the Gradle plugin `allegro/axion-release-plugin` to `kotlin-toolchain-release-plugin`). Adapt names, types, and imports to your plugin.
+Patterns lifted from a real conversion (the Gradle plugin `allegro/axion-release-plugin` ported to a Kotlin Toolchain local release plugin). Adapt names, types, and imports to your plugin.
 
 ## 1. `plugins/<name>/module.yaml`
 
