@@ -134,6 +134,22 @@ dependencies@android:
   - androidx.core:core-ktx:1.12.0
 ```
 
+## iOS apps
+
+For an `ios/app` module, Toolchain generates and manages the Xcode project. On first build, if no Xcode project exists, it creates `module.xcodeproj` (target `app`) beside the module and writes a **complete** default `Info.plist`. It then points the `INFOPLIST_FILE` build setting at that plist and uses it **verbatim** — it does **not** enable Xcode's `GENERATE_INFOPLIST_FILE`, so the `Info.plist` must be self-contained.
+
+Two consequences worth knowing:
+
+- **A pre-existing `Info.plist` is used as-is and never completed.** Toolchain writes its default plist *only* when no `Info.plist` exists. If you supply your own, it must itself contain the required `CFBundle*` keys (`CFBundleIdentifier`, `CFBundleExecutable`, `CFBundleName`, …). A partial plist produces an `.app` with no bundle id, and the simulator refuses to install it:
+
+  ```
+  Simulator device failed to install the application. Missing bundle ID.
+  ```
+
+  A fresh `kotlin init` iOS app never hits this (the generated default plist is complete). It typically bites when migrating a project that already had an `Info.plist` — see the `gradle-to-kotlin-toolchain-project` skill for the Gradle/KMP case.
+
+- **The generated project is named `module.xcodeproj` (target `app`) and is only created when absent** — it is not regenerated when `module.yaml` settings change. Delete it to force a clean regeneration.
+
 ## Plugins
 
 If a behavior is not natively supported by the declarative YAML, use Kotlin Toolchain's **local plugin** system to extend the build — this is the escape hatch for custom build logic.

@@ -200,6 +200,33 @@ The Toolchain ignores this file entirely.
 
 Older images pinned by testcontainers (e.g. `mongo:3.2`) are amd64-only and crash immediately under Rosetta/QEMU on M-series Macs (`runtime: failed to create new OS thread (have 2 already; errno=22)`). This is **unchanged by the migration** — the same image fails identically under `./gradlew check`. Flag it in the PR's Test plan as a pre-existing host incompatibility, not a regression. CI on `ubuntu-latest` (amd64) is unaffected.
 
+### iOS (KMP): a migrated `Info.plist` loses its `CFBundle*` keys → app won't install
+
+A Gradle/KMP iOS app keeps its bundle metadata in the hand-maintained `iosApp.xcodeproj`, **not** in `Info.plist`. The KMP wizard sets `GENERATE_INFOPLIST_FILE = YES` and `PRODUCT_BUNDLE_IDENTIFIER = …` in the pbxproj, so Xcode *synthesizes* the `CFBundle*` keys at build time (`CFBundleIdentifier` from `PRODUCT_BUNDLE_IDENTIFIER`, `CFBundleExecutable` from `EXECUTABLE_NAME`, …) and merges them with the checked-in `Info.plist`. That plist is therefore intentionally **partial** — it carries only extras (usage descriptions, launch storyboard) and often has no `CFBundleIdentifier` at all.
+
+Toolchain does **not** consume the existing `.xcodeproj`. It generates its own `module.xcodeproj` and uses your `Info.plist` verbatim (via `INFOPLIST_FILE`, **without** `GENERATE_INFOPLIST_FILE`), writing its own complete default plist *only* when none exists. So the migrated partial plist survives, nothing synthesizes the `CFBundle*` keys, and the built `.app` has no bundle id:
+
+```
+Simulator device failed to install the application. Missing bundle ID.
+```
+
+A fresh `kotlin init` iOS app doesn't hit this (Toolchain writes a complete default plist), which is why it surfaces only on migration.
+
+**Fix**: make the module's `Info.plist` self-contained — add the standard `CFBundle*` keys (the values reference build settings Toolchain already sets), keeping your app-specific keys alongside them:
+
+```xml
+<key>CFBundleDevelopmentRegion</key><string>$(DEVELOPMENT_LANGUAGE)</string>
+<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+```
+
+(`PRODUCT_BUNDLE_IDENTIFIER` is set on the generated target, so `$(PRODUCT_BUNDLE_IDENTIFIER)` resolves.) See the `kotlin-toolchain` skill's "iOS apps" section for the underlying generate-project behavior.
+
 ## What goes in the PR
 
 A whole-project migration PR is large; a clear description shortens review by hours. Sections to include:
