@@ -227,6 +227,35 @@ A fresh `kotlin init` iOS app doesn't hit this (Toolchain writes a complete defa
 
 (`PRODUCT_BUNDLE_IDENTIFIER` is set on the generated target, so `$(PRODUCT_BUNDLE_IDENTIFIER)` resolves.) See the `kotlin-toolchain` skill's "iOS apps" section for the underlying generate-project behavior.
 
+### KMP: carry over *every* source set's dependencies — don't drop "belongs-elsewhere-looking" ones
+
+A Gradle KMP module declares dependencies per source set (`commonMain`, `jvmMain`, `androidMain`, `iosMain`, `commonTest`, `jvmTest`, …). **Each block must be carried over to the matching Amper section** — `dependencies` (common), `dependencies@jvm` / `@android` / `@ios` (platform), `test-dependencies`, `test-dependencies@<platform>`. Translate the source sets exhaustively; do not cherry-pick the "obvious library" deps. Two facts make silent drops costly:
+
+- **A `*Main` dependency is also on that target's *test* classpath.** In KMP, `jvmTest` extends `jvmMain`, so an `implementation(...)` in `jvmMain` is visible to JVM tests. Dropping a `*Main` dep can remove something the tests silently relied on — with no compile error, only a runtime failure.
+- **A dependency can look like it belongs to another module but be load-bearing here.** Canonical case: `jvmMain { implementation(compose.desktop.currentOs) }` in a *shared library*. It reads like a desktop-app dependency (easy to drop when there's a separate desktop-app module), but it supplies the **Skiko native runtime** (`skiko-awt-runtime-<os>`, which carries `libskiko-<os>.dylib` + its `.sha256`) that the module's own **JVM Compose UI tests** (`compose.uiTest` / `runComposeUiTest`) load at runtime.
+
+Dropping `compose.desktop.currentOs` compiles fine, then JVM Compose UI tests crash at runtime with a cryptic:
+
+```
+org.jetbrains.skiko.LibraryLoadException: Cannot find libskiko-macos-arm64.dylib.sha256, proper native dependency missing.
+```
+
+This is **not** a Toolchain bug — a Gradle build fails identically without it (`compose.ui:ui-test` pulls only Skiko's *classes*, never the native runtime; the natives come from the desktop artifact). It was simply not carried over. Restore it under `dependencies@jvm`, matching where Gradle had it:
+
+```yaml
+dependencies@jvm:
+  - $compose.desktop.currentOs
+```
+
+Or, cleaner for a library (keeps Skiko natives off consumers' classpaths), scope it to tests:
+
+```yaml
+test-dependencies@jvm:
+  - $compose.desktop.currentOs
+```
+
+**Guard against drops:** after writing `module.yaml`, diff each Gradle source set's dependency list against its Amper counterpart (names + count), and run `./kotlin show dependencies -m <module>` to confirm the resolved graph matches the Gradle build's per-configuration dependencies. Anything present in a Gradle `*Main`/`*Test` block but absent from the corresponding Amper section is a bug until proven otherwise.
+
 ## What goes in the PR
 
 A whole-project migration PR is large; a clear description shortens review by hours. Sections to include:
