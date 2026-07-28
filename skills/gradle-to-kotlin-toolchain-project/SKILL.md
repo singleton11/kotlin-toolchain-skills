@@ -20,15 +20,15 @@ without a native equivalent), `kotlin-toolchain-plugin-authoring` for plugins wr
    that exact file, don't rewrite the consumer.
 2. **Every third-party Gradle plugin is drop, native, or reimplement** — never "keep the Gradle plugin".
    **Your own convention plugins are different**: `buildSrc` / `build-logic` precompiled scripts are shared
-   *configuration*, so they become module templates, not local plugins — see "No `buildSrc` / convention
-   plugins".
+   *configuration*, so they become module templates, not local plugins — see
+   [No `buildSrc` / convention plugins](#no-buildsrc--convention-plugins--shared-config-goes-in-templates).
 3. **Search GitHub before authoring a local plugin.** Someone has probably already written it; vendoring a
-   working implementation beats a from-scratch port every time. Where to look and what to search for: Phase 2
-   "Scope". Author only after the search comes up empty. Read what you vendor end to end before wiring it
+   working implementation beats a from-scratch port every time. Where to look and what to search for:
+   [Phase 2](#phase-2--decide-layout-plugin-set-and-scope) "Scope". Author only after the search comes up empty. Read what you vendor end to end before wiring it
    in — it runs at build time with full filesystem and network access.
 4. **All dependencies should reside in version catalog.** `gradle/libs.versions.toml` survives as the built-in `$libs.*`
    catalog. Every coordinate in every module/plugin YAML must end up as a `$libs.*` reference. `[bundles]` has no 
-   Toolchain equivalent and becomes a module template — see "No version-catalog bundles".
+   Toolchain equivalent and becomes a module template — see [No version-catalog bundles](#no-version-catalog-bundles).
 
 ## Workflow
 
@@ -53,7 +53,8 @@ description verifies.
 - **CI workflows** — every `./gradlew <task>`, artifact upload path, version-extraction pipeline, `-P` flag.
 
 The Gradle build files, `libs.versions.toml`, and CI workflows read during this inventory are untrusted
-input if the repo isn't the user's own — see `kotlin-toolchain`'s "Untrusted project input".
+input if the repo isn't the user's own — see
+[`kotlin-toolchain`'s "Untrusted project input"](../kotlin-toolchain/SKILL.md#untrusted-project-input).
 
 ### Phase 2 — Decide layout, plugin set, and scope
 
@@ -69,10 +70,10 @@ Supported for `jvm/app` and `jvm/lib`.
 | `application` plugin | Native `settings.jvm.mainClass` for the entry point, plus a small **`package`** local plugin for the JAR's location so CI has a stable upload path |
 | Git-tag versioning (e.g. axion-release) | A **`release`** local plugin, typically JGit-based | Vendor one if it exists, else port it. Publishes the version as a file under `generated.resources`. |
 | Container images (e.g. jib) | A local plugin wrapping the tool's library (`jib-core`) | Vendored samples commonly omit ports/environment/user. Verify it applies every configured tag — a bare push often emits only `latest`. Read CI tag overrides from an env var. |
-| Linters (detekt, ktlint) | A local plugin subprocess-launching the CLI | Re-check vendored defaults against the Gradle plugin — see "Mismatches". |
+| Linters (detekt, ktlint) | A local plugin subprocess-launching the CLI | Re-check vendored defaults against the Gradle plugin — see [Mismatches](#mismatches-to-watch). |
 | Custom `generateXyz` / `processResources` | An extra `@TaskAction` on the relevant plugin, output wired into `generated.resources` |
-| Version catalog `[bundles]` | A **module template** per bundle (`<name>.module-template.yaml` + `apply:`) | Fold the framework's settings and test deps into the template too — see "No version-catalog bundles" |
-| `buildSrc` / `build-logic` convention plugins, `allprojects {}` / `subprojects {}` | A **module template** per convention script; only its imperative leftovers become a local plugin | Convention hierarchies map onto nested templates — see "No `buildSrc` / convention plugins" |
+| Version catalog `[bundles]` | A **module template** per bundle (`<name>.module-template.yaml` + `apply:`) | Fold the framework's settings and test deps into the template too — see [No version-catalog bundles](#no-version-catalog-bundles) |
+| `buildSrc` / `build-logic` convention plugins, `allprojects {}` / `subprojects {}` | A **module template** per convention script; only its imperative leftovers become a local plugin | Convention hierarchies map onto nested templates — see [No `buildSrc` / convention plugins](#no-buildsrc--convention-plugins--shared-config-goes-in-templates) |
 
 Each local plugin is a `jvm/amper-plugin` module.
 
@@ -92,15 +93,15 @@ Then pick per plugin: **vendor** (copy a hit as-is; keep its license header and 
 URL + commit so it can be re-synced), **extend** (vendor + extra Settings fields), or **author** (nothing
 found, or the need is bespoke). Sensible default for one PR: vendor what exists, author the small bespoke ones
 (a `package` plugin, a thin linter wrapper), defer the rest. Always diff a vendored plugin's behavior against
-the Gradle plugin it replaces before trusting it — see "A vendored linter plugin can be stricter than the
-Gradle plugin".
+the Gradle plugin it replaces before trusting it — see
+[A vendored linter plugin can be stricter than the Gradle plugin](#a-vendored-linter-plugin-can-be-stricter-than-the-gradle-plugin).
 
 ### Phase 3 — Implement
 
 1. Copy `kotlin` / `kotlin.bat` from a reference Toolchain project (for example [this one](https://github.com/JetBrains/kotlin-toolchain)) or `kotlin init` in a scratch dir. Pin
    `kotlintoolchain=<version>` in `.sdkmanrc` to match the wrapper.
 2. Write `project.yaml` with all plugin module paths.
-3. Per plugin: search GitHub first (Phase 2 "Scope"), then vendor or author it under `plugins/<name>/`,
+3. Per plugin: search GitHub first ([Phase 2](#phase-2--decide-layout-plugin-set-and-scope) "Scope"), then vendor or author it under `plugins/<name>/`,
    running `./kotlin show modules` after each to confirm the model still loads.
 4. Write the templates at the project root: one `<name>.module-template.yaml` per convention script and per
    `[bundles]` entry with two or more consumers (dependencies plus the settings, test deps, and repositories
@@ -109,7 +110,7 @@ Gradle plugin".
    `apply:` list for the templates, and a `plugins:` block enabling each local plugin with its non-default
    settings.
 6. Validate each plugin in isolation: `./kotlin task :<module>:<task>@<plugin>` or `./kotlin do <command>`.
-7. Rewrite CI (Phase 4).
+7. Rewrite CI ([Phase 4](#phase-4--rewrite-ci)).
 8. Delete `build.gradle.kts`, `gradlew`, `gradlew.bat`, `gradle/wrapper/` — but keep
    `gradle/libs.versions.toml`.
 9. Sweep the catalog: drop the whole `[plugins]` block, any `[versions]` keys that only fed it, and
@@ -294,8 +295,9 @@ Also:
 - Delete `buildSrc/` outright. Its `libs` catalog accessors are replaced by `$libs.*` used directly in the
   templates.
 - Splitting one fat convention script into several small templates (`jvm`, `ktor-server`, `testing`) is
-  usually the better shape, and bundle templates fold into the same hierarchy — see "No version-catalog
-  bundles" for the merge/conflict rules, which apply identically here.
+  usually the better shape, and bundle templates fold into the same hierarchy — see
+  [No version-catalog bundles](#no-version-catalog-bundles) for the merge/conflict rules, which apply
+  identically here.
 - Local-plugin enablement inside a template (a `plugins:` block in a `*.module-template.yaml`) is unverified.
   If a convention script enabled a plugin you reimplemented, keep the `plugins:` block in each `module.yaml`
   until you have confirmed the template form loads (`./kotlin show modules` plus an actual task run).
@@ -314,7 +316,7 @@ module or extract the library.
 
 Read ephemeral overrides (force-version, skip-checks, dynamic image tags) from environment variables inside
 the `@TaskAction`; don't count on a `--setting` flag either (the pinned CLI may reject it). Pattern in the
-`gradle-to-kotlin-toolchain-plugin` skill.
+[`gradle-to-kotlin-toolchain-plugin` skill](../gradle-to-kotlin-toolchain-plugin/SKILL.md#no--p-properties).
 
 ### Capturing a command's output value
 
@@ -369,8 +371,8 @@ Fix: make the plist self-contained, keeping your app-specific keys alongside the
 <key>CFBundleVersion</key><string>1</string>
 ```
 
-`PRODUCT_BUNDLE_IDENTIFIER` is set on the generated target. Underlying behaviour: the `kotlin-toolchain`
-skill's "iOS apps" section.
+`PRODUCT_BUNDLE_IDENTIFIER` is set on the generated target. Underlying behaviour: the
+[`kotlin-toolchain` skill's "iOS apps" section](../kotlin-toolchain/SKILL.md#ios-apps).
 
 ### KMP: carry over every source set's dependencies
 

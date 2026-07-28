@@ -140,7 +140,8 @@ points `INFOPLIST_FILE` at it, and uses it verbatim — it does not enable `GENE
   ```
 
 - `kotlin init` iOS apps never hit this; migrated projects with their own `Info.plist` do. See the
-  `gradle-to-kotlin-toolchain-project` skill for the Gradle/KMP case.
+  [`gradle-to-kotlin-toolchain-project` skill](../gradle-to-kotlin-toolchain-project/SKILL.md#ios-kmp-a-migrated-infoplist-loses-its-cfbundle-keys)
+  for the Gradle/KMP case.
 - `module.xcodeproj` is created only when absent and is not regenerated when `module.yaml` changes. Delete
   it to force regeneration.
 
