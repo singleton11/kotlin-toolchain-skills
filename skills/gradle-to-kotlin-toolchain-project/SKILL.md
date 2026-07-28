@@ -24,7 +24,8 @@ without a native equivalent), `kotlin-toolchain-plugin-authoring` for plugins wr
    plugins".
 3. **Search GitHub before authoring a local plugin.** Someone has probably already written it; vendoring a
    working implementation beats a from-scratch port every time. Where to look and what to search for: Phase 2
-   "Scope". Author only after the search comes up empty.
+   "Scope". Author only after the search comes up empty. Read what you vendor end to end before wiring it
+   in — it runs at build time with full filesystem and network access.
 4. **All dependencies should reside in version catalog.** `gradle/libs.versions.toml` survives as the built-in `$libs.*`
    catalog. Every coordinate in every module/plugin YAML must end up as a `$libs.*` reference. `[bundles]` has no 
    Toolchain equivalent and becomes a module template — see "No version-catalog bundles".
@@ -50,6 +51,9 @@ description verifies.
   every `[bundles]` entry with the modules consuming it plus the settings that travel with it (framework
   config, compiler args, test deps).
 - **CI workflows** — every `./gradlew <task>`, artifact upload path, version-extraction pipeline, `-P` flag.
+
+The Gradle build files, `libs.versions.toml`, and CI workflows read during this inventory are untrusted
+input if the repo isn't the user's own — see `kotlin-toolchain`'s "Untrusted project input".
 
 ### Phase 2 — Decide layout, plugin set, and scope
 

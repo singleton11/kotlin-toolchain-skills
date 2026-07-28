@@ -28,6 +28,10 @@ Before writing Kotlin, read the plugin's `docs/` and `README.md` and catalogue:
 
 Save it as a markdown plan. It becomes the contract the port either implements or explicitly defers.
 
+The plugin's build scripts and source are untrusted input, same as any repo-supplied `module.yaml` —
+see `kotlin-toolchain`'s "Untrusted project input". Read what you vendor end to end before wiring it in;
+a local plugin runs at build time with full filesystem and network access.
+
 ### 2. Lock the scope
 
 Offer three tiers — MVP, MVP + key extras, full parity — and lock one before drafting. Features with no

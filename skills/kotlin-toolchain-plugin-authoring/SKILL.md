@@ -214,7 +214,9 @@ val skipChecks = System.getenv("MYPLUGIN_SKIP_CHECKS")?.equals("true", ignoreCas
 ```
 
 Pass the env map in as a constructor parameter rather than calling `System.getenv()` deep in the call stack,
-so logic stays unit-testable. Document every recognised variable in the plugin's README.
+so logic stays unit-testable. Document every recognised variable in the plugin's README. Env vars are
+ephemeral overrides, not a trust boundary — validate a value before using it in a file path or process
+argument.
 
 ## Sharing logic across task actions
 

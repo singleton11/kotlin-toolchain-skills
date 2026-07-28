@@ -25,5 +25,14 @@ Copy the desired skill folder into your agent's skills directory:
 cp -r skills/kotlin-toolchain .claude/skills/
 ```
 
+## Security
+
+These skills run a build tool: expect the agent to invoke `./kotlin`, download Maven artifacts, and
+compile/execute local plugins from the target repo. `kotlin-toolchain`'s "Untrusted project input" section
+covers the trust boundary (repo YAML/plugins are data or code you didn't write, review before acting).
+Audit history: [Gen Agent Trust Hub, Jul 2026](https://www.skills.sh/singleton11/kotlin-toolchain-skills/kotlin-toolchain/security/agent-trust-hub)
+flagged the piped `install.sh`/`install.ps1` commands, since removed; findings about command execution and
+external downloads are inherent to a build-tool skill and won't clear.
+
 ## Repository Layout
 - `skills/` — directory containing all skills

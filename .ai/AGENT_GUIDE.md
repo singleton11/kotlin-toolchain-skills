@@ -54,4 +54,4 @@ Keep TRIGGER/SKIP coverage even when trimming prose — it's what stops the skil
 
 - Docs: <https://kotlin-toolchain.org/dev/>
 - Source: <https://github.com/JetBrains/kotlin-toolchain>
-- Issue tracker: YouTrack project `AMPER`
+- Issue tracker: YouTrack project `KTC`
