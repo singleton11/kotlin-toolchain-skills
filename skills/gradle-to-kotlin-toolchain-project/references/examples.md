@@ -1,10 +1,11 @@
-# Migration patterns — concrete code
+# Migration patterns
 
-Patterns lifted from a real migration (a Gradle + Ktor + Exposed + MongoDB + Postgres service to Kotlin Toolchain). Adapt names, scopes, and versions to your project.
+Lifted from one real migration (Gradle + Ktor + Exposed + MongoDB + Postgres service). Adapt names, scopes,
+and versions.
 
-## 1. `project.yaml` — register all local plugins
+## 1. `project.yaml`
 
-Module list is alphabetical. The `plugins:` block points at each plugin's source directory; without it, the consumer module's `plugins:` block cannot resolve the plugin id.
+The root module (`.`) is included by default and needs no entry.
 
 ```yaml
 modules:
@@ -22,11 +23,10 @@ plugins:
   - ./plugins/release
 ```
 
-The root module (`.`) is included by default and does not need to be listed.
+## 2. Root `module.yaml` — JVM/Ktor app
 
-## 2. Root `module.yaml` — a JVM/Ktor application
-
-`product: jvm/app` plus `layout: maven-like` to keep `src/main/kotlin`/`src/main/resources`/`src/test/kotlin`/`src/test/resources` exactly where Gradle had them. Every dependency is a `$libs.*` reference; the catalog is the single source of truth.
+`layout: maven-like` keeps `src/main/kotlin` and friends where Gradle had them. `release`/`ktlint`/`package`
+use the `enabled` shorthand; `jib`/`detekt` must use the long form because they carry settings.
 
 ```yaml
 product: jvm/app
@@ -55,7 +55,7 @@ plugins:
       tags: ["latest"]
   detekt:
     enabled: true
-    configFile: detekt.yml          # relative to module root; ${...} interpolation NOT supported here
+    configFile: detekt.yml          # module-relative; ${...} interpolation is NOT supported here
     buildUponDefaultConfig: true
     rulesetClasspath:
       - $libs.detekt.rules
@@ -88,35 +88,20 @@ test-dependencies:
   - $libs.mockk
 ```
 
-### Notes
-
-- `release: enabled` is the shorthand form and is only valid when no plugin settings are set.
-- `jib:` and `detekt:` use the long form (`enabled: true` plus settings) because they pass configuration. **Forgetting `enabled: true` when settings are present silently disables the plugin** — Toolchain only warns.
-- `configFile: detekt.yml` is a relative path because `${module.rootDir}` interpolation does not work in `module.yaml`.
-
 ## 3. Stub `build.gradle.kts` for Dependabot
 
-GitHub Dependabot's `package-ecosystem: gradle` file fetcher requires a `build.gradle(.kts)` in the configured directory before it scans `gradle/libs.versions.toml`. Without this stub, the Dependabot weekly run silently does nothing for Gradle-ecosystem dependencies.
-
 ```kotlin
-// Intentionally empty.
-//
-// This project is built with the Kotlin Toolchain (Amper engine), not Gradle.
-// All dependency versions live in `gradle/libs.versions.toml`, which the
-// Toolchain consumes natively as its `$libs.*` catalog.
-//
-// This file exists so that GitHub Dependabot's `package-ecosystem: gradle`
-// integration discovers the project: Dependabot's detector requires either a
-// `build.gradle(.kts)` or `settings.gradle(.kts)` at the configured directory
-// before it will scan `gradle/libs.versions.toml` for updatable dependencies.
-// See `.github/dependabot.yml`.
+// Intentionally empty. Built with the Kotlin Toolchain, not Gradle; versions live in
+// gradle/libs.versions.toml, consumed natively as the $libs.* catalog. This file exists only
+// so Dependabot's `package-ecosystem: gradle` detector finds the project. See .github/dependabot.yml.
 ```
 
-Source confirmation: <https://github.com/dependabot/dependabot-core/blob/main/gradle/lib/dependabot/gradle/file_fetcher.rb> — `required_files_in?` gates on `SUPPORTED_BUILD_FILE_NAMES = %w(build.gradle build.gradle.kts)`.
+Dependabot gates on `SUPPORTED_BUILD_FILE_NAMES = %w(build.gradle build.gradle.kts)` —
+<https://github.com/dependabot/dependabot-core/blob/main/gradle/lib/dependabot/gradle/file_fetcher.rb>.
 
-## 4. `.sdkmanrc` — pin the Toolchain version
+## 4. `.sdkmanrc`
 
-Add a `kotlintoolchain` entry alongside the existing `java` line. The value must match the version pinned in your `kotlin` wrapper script (`kotlin_cli_version=…` at the top of the wrapper).
+The value must match `kotlin_cli_version=…` at the top of the `kotlin` wrapper.
 
 ```
 # Enable auto-env through the sdkman_auto_env config
@@ -124,14 +109,11 @@ java=21.0.7-tem
 kotlintoolchain=0.11.0
 ```
 
-## 5. `gradle/libs.versions.toml` — catalog cleanup
+## 5. `gradle/libs.versions.toml` cleanup
 
-Two cleanup passes after the initial migration:
-
-1. **Remove the `[plugins]` block entirely.** Toolchain has no use for Gradle plugin coordinates; every former entry is dead.
-2. **Remove `[versions]` keys that only fed those plugins** (e.g. `kotlin`, `axion-release-plugin`, `jib-plugin`, `ktlint-plugin`, `detekt-plugin` — anything whose `version.ref` was used only by `[plugins]` entries).
-
-Then **add catalog entries for every coordinate the local plugins use** so Dependabot can track them centrally. Group by purpose with a comment header:
+Remove the whole `[plugins]` block and any `[versions]` key that only fed it (`kotlin`,
+`axion-release-plugin`, `jib-plugin`, `ktlint-plugin`, `detekt-plugin`). Then add entries for every
+coordinate the local plugins use, so Dependabot tracks them:
 
 ```toml
 # Linters
@@ -142,8 +124,8 @@ ktlint = "1.5.0"
 # Local plugin runtime
 jib-core = "0.28.1"
 jgit = "7.0.0.202409031743-r"
-# Pinned to the version contemporary with MINA SSHD 2.13.x (what jgit 7.0.0 ships against);
-# without bouncycastle on the runtime classpath, SSH push fails with NoClassDefFoundError.
+# Contemporary with MINA SSHD 2.13.x (what jgit 7.0.0 ships against); without bouncycastle
+# on the runtime classpath, SSH push fails with NoClassDefFoundError.
 bouncycastle = "1.78.1"
 slf4j = "2.0.13"
 
@@ -159,15 +141,98 @@ bouncycastle-bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref 
 slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j" }
 ```
 
-Every plugin's `module.yaml` and `plugin.yaml` then refers to these via `$libs.detekt.cli` etc. — never a hardcoded coordinate.
+### `[bundles]` → module templates
+
+`$libs.bundles.*` doesn't exist. Each bundle with 2+ consumers becomes a root-level
+`<name>.module-template.yaml` that also carries the settings, test deps, and repositories that used to sit
+next to the bundle in `build.gradle.kts`. Delete the `[bundles]` block afterwards.
+
+```toml
+# gradle/libs.versions.toml — before
+[bundles]
+ktor-server = ["ktor-server-core", "ktor-server-netty", "ktor-server-content-negotiation",
+               "ktor-serialization-kotlinx-json"]
+exposed = ["exposed-core", "exposed-jdbc", "exposed-java-time"]
+testing = ["kotest-runner-junit5", "kotest-assertions-core", "mockk"]
+```
+
+```yaml
+# ktor-server.module-template.yaml
+dependencies:
+  - $libs.ktor.server.core
+  - $libs.ktor.server.netty
+  - $libs.ktor.server.content.negotiation
+  - $libs.ktor.serialization.kotlinx.json
+
+settings:
+  kotlin:
+    serialization: json      # the bundle's companion configuration, not just its coordinates
+
+test-dependencies:
+  - $libs.ktor.server.test.host
+```
+
+```yaml
+# persistence.module-template.yaml
+dependencies:
+  - $libs.exposed.core
+  - $libs.exposed.jdbc
+  - $libs.exposed.java.time
+
+test-dependencies:
+  - $libs.testcontainers.postgresql
+```
+
+```yaml
+# testing.module-template.yaml — test-only bundles are templates too
+test-dependencies:
+  - $libs.kotest.runner.junit5
+  - $libs.kotest.assertions.core
+  - $libs.mockk
+```
+
+```yaml
+# service.module-template.yaml — nested: one line for "our standard service"
+apply:
+  - //ktor-server.module-template.yaml
+  - //persistence.module-template.yaml
+  - //testing.module-template.yaml
+
+settings:
+  jvm:
+    jdk:
+      version: 21
+```
+
+```yaml
+# services/orders/module.yaml
+product: jvm/app
+
+layout: maven-like
+
+apply:
+  - //service.module-template.yaml
+
+settings:
+  jvm:
+    mainClass: io.example.orders.App   # module.yaml wins over anything a template sets
+
+dependencies:
+  - $libs.arrow.core                   # appended to the template's list
+```
+
+Check the result with `./kotlin show dependencies -m orders` and diff it against the Gradle build's
+configuration — a missing template `apply:` looks exactly like a dropped bundle.
 
 ## 6. The smallest plugin: `package`
 
-Stages the application JAR at `${module.rootDir}/build/libs/${module.name}.jar`, giving CI a stable, build-tool-agnostic path equivalent to what Gradle's `application` plugin published. Roughly 30 lines of Kotlin + two short YAMLs.
-
-### `plugins/package/module.yaml`
+Stages the application JAR at `${module.rootDir}/build/libs/${module.name}.jar` — the stable path Gradle's
+`application` plugin used to publish, so CI never touches Toolchain internals
+(`build/tasks/_<module>_jarJvm/<module>-jvm.jar`). `${module.jar}` auto-wires the `:jarJvm` dependency, so
+`./kotlin do package` builds the JAR first.
 
 ```yaml
+# plugins/package/module.yaml
 product: jvm/amper-plugin
 
 description: Stages the application JAR at build/libs/${module.name}.jar for CI artifact uploads.
@@ -183,26 +248,21 @@ settings:
     languageVersion: 2.1
 ```
 
-### `plugins/package/src/Settings.kt`
-
 ```kotlin
+// plugins/package/src/Settings.kt
 package io.example.amper.plugins.pkg
 
 import org.jetbrains.amper.plugins.Configurable
 
 @Configurable
 interface Settings {
-    /**
-     * Optional override for the file name of the staged JAR (no extension).
-     * Defaults to the module name.
-     */
+    /** File name of the staged JAR, without extension. Defaults to the module name. */
     val artifactName: String?
 }
 ```
 
-### `plugins/package/src/PackageApplication.kt`
-
 ```kotlin
+// plugins/package/src/PackageApplication.kt
 package io.example.amper.plugins.pkg
 
 import org.jetbrains.amper.plugins.CompilationArtifact
@@ -222,59 +282,45 @@ fun packageApplication(
 }
 ```
 
-### `plugins/package/plugin.yaml`
-
 ```yaml
+# plugins/package/plugin.yaml
 tasks:
   package:
     action: !io.example.amper.plugins.pkg.packageApplication
-      jar: ${module.jar}                                                      # CompilationArtifact-typed; auto-wires the jarJvm dependency
-      outputJar: ${module.rootDir}/build/libs/${module.name}.jar              # project-relative @Output, same pattern as BCV plugin's apiDump
+      jar: ${module.jar}                                            # CompilationArtifact; auto-wires jarJvm
+      outputJar: ${module.rootDir}/build/libs/${module.name}.jar     # project-relative @Output
 
 commands:
   - name: package
     performedBy: package
 ```
 
-Why a plugin and not a shell step in CI:
-- `${module.jar}` automatically wires the dependency on the module's `:jarJvm` task — running `./kotlin do package` builds the JAR first as a side-effect.
-- The path contract (`${module.rootDir}/build/libs/${module.name}.jar`) is encoded in the plugin, so CI doesn't need to know Toolchain internals (`build/tasks/_<module>_jarJvm/<module>-jvm.jar`) and continues to work if those internals change.
-- Consumers in different repos just enable the plugin (`package: enabled`) and `./kotlin do package` produces the same shape everywhere.
-
 ## 7. Detekt `useTypeResolution` patch
 
-The vendored upstream detekt plugin (`amper/build-sources/detekt/`) passes `--classpath` unconditionally, enabling detekt's type-resolution mode. Gradle's default `detekt` task does **not** enable type resolution, which means a fresh migration that uses the vendored plugin as-is surfaces violations Gradle never reported (notably `UnreachableCode` on `?: return@get` elvis patterns).
-
-Add an opt-in setting to the plugin to match Gradle parity by default.
-
-### In `plugins/detekt/src/Settings.kt`
+Gates the vendored plugin's unconditional `--classpath` behind an opt-in so the default matches Gradle's
+default `detekt` task.
 
 ```kotlin
+// plugins/detekt/src/Settings.kt
 @Configurable
 interface Settings {
     val configFile: Path?
     val buildUponDefaultConfig: Boolean get() = false
 
     /**
-     * Run detekt with type resolution enabled (passes the module's compile classpath via `--classpath`).
-     *
-     * Type resolution activates additional rules that depend on type information, but some of those rules
-     * (notably `UnreachableCode`) are known to produce false positives. Defaults to `false` to match the
-     * behaviour of the Gradle detekt plugin's default `detekt` task; set to `true` to opt in.
+     * Run detekt with type resolution (passes the module's compile classpath via `--classpath`).
+     * Type-resolution rules include known false positives (notably `UnreachableCode`), so this
+     * defaults to `false` to match the Gradle detekt plugin's default task. Set `true` to opt in.
      */
     val useTypeResolution: Boolean get() = false
 
-    /**
-     * Extra rule-set jars to load into Detekt via `--plugins`.
-     */
+    /** Extra rule-set jars, loaded via `--plugins`. */
     val rulesetClasspath: Classpath
 }
 ```
 
-### In `plugins/detekt/src/runDetekt.kt` (inside the args-building block)
-
 ```kotlin
-// Provide classpath for type resolution if opted in (see Settings.useTypeResolution).
+// plugins/detekt/src/runDetekt.kt — inside the args-building block
 if (commonParameters.settings.useTypeResolution) {
     val cp = commonParameters.moduleClasspath.resolvedFiles
     if (cp.isNotEmpty()) {
@@ -284,29 +330,15 @@ if (commonParameters.settings.useTypeResolution) {
 }
 ```
 
-Consumers who want type-resolved analysis opt in via `module.yaml`:
+## 8. Preserving a legacy `release.properties` contract
 
-```yaml
-plugins:
-  detekt:
-    enabled: true
-    useTypeResolution: true
-    configFile: detekt.yml
-    ...
-```
-
-## 8. Release plugin — also publish legacy `release.properties`
-
-If the application source already reads its version from a classpath resource like `release.properties` (key=value format), preserve that contract by adding a sibling `@TaskAction` to the release plugin that writes the same format. Source code stays untouched.
-
-### `plugins/release/src/tasks/WriteReleaseProperties.kt`
+If application source already reads its version from `release.properties` (key=value), add a sibling task
+that writes that exact format instead of changing the source.
 
 ```kotlin
+// plugins/release/src/tasks/WriteReleaseProperties.kt
 package io.example.release.tasks
 
-import io.example.release.Settings
-import io.example.release.git.GitRepo
-import io.example.release.version.VersionPipeline
 import org.jetbrains.amper.plugins.ExecutionAvoidance
 import org.jetbrains.amper.plugins.Input
 import org.jetbrains.amper.plugins.Output
@@ -318,11 +350,6 @@ import kotlin.io.path.deleteRecursively
 import kotlin.io.path.div
 import kotlin.io.path.writeText
 
-/**
- * Companion to [writeVersion] that publishes the same version in the legacy
- * `release=<version>` properties shape, for apps that already read this file
- * via `java.util.Properties.load(getResourceAsStream("release.properties"))`.
- */
 @OptIn(ExperimentalPathApi::class)
 @TaskAction(executionAvoidance = ExecutionAvoidance.Disabled)
 fun writeReleaseProperties(
@@ -340,9 +367,8 @@ fun writeReleaseProperties(
 }
 ```
 
-### Register in `plugins/release/plugin.yaml`
-
 ```yaml
+# plugins/release/plugin.yaml — both tasks are build-graph contributors, so neither is in commands:
 tasks:
   writeVersion:
     action: !io.example.release.tasks.writeVersion
@@ -362,25 +388,24 @@ generated:
     - directory: ${tasks.writeReleaseProperties.action.outputDir}
 ```
 
-Neither task is in `commands:` — they're build-graph contributors that run automatically when something downstream needs the resources.
+## 9. Release plugin on the root module — break the task loop
 
-## 9. The release plugin and the root module
-
-When the release plugin's tasks take an `@Input moduleRootDir: Path`, and the consumer module is the **project root** (so `${module.rootDir}` is the same directory that contains `build/`), Toolchain's dependency inference may treat every build output as an input of those tasks. The result is a "Task dependency loop detected" error during `./kotlin show modules` or `./kotlin build`.
-
-Patch every release-plugin task that takes `moduleRootDir`:
+When `${module.rootDir}` is the project root (which contains `build/`), dependency inference treats every
+build output as an input of any task taking `@Input moduleRootDir: Path`, giving
+"Task dependency loop detected" on `./kotlin show modules` or `build`. Opt out on every such parameter:
 
 ```kotlin
 @TaskAction
 fun currentVersion(
-    @Input(inferTaskDependency = false) moduleRootDir: Path,   // ← inferTaskDependency = false
+    @Input(inferTaskDependency = false) moduleRootDir: Path,
     settings: Settings,
 ) { /* ... */ }
 ```
 
-The `inferTaskDependency = false` opt-out tells Toolchain "this Path is a configuration input, not a directory whose contents drive task dependencies". Apply it to every task in the plugin that takes a directory path that overlaps with the build tree.
+## 10. `.github/workflows/ci.yml`
 
-## 10. CI workflow — `.github/workflows/ci.yml`
+No `setup-java`; the wrapper provisions its JDK. The upload path is the stable `build/libs/` from the
+`package` plugin.
 
 ```yaml
 name: CI
@@ -401,7 +426,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        fetch-depth: 0  # Needed for the release plugin to determine the version from git tags
+        fetch-depth: 0  # the release plugin derives the version from git tags
 
     - name: Build with Kotlin Toolchain
       run: |
@@ -416,76 +441,34 @@ jobs:
         path: build/libs/
 ```
 
-`setup-java` is gone (the `./kotlin` wrapper auto-provisions its JDK). The artifact path is the stable `build/libs/` that the `package` plugin produces.
+## 11. `.github/workflows/release.yml` — the version-capture step
 
-## 11. CI workflow — `.github/workflows/release.yml`
+Full workflow: registry login → `checkout` with `fetch-depth: 0` → verify → tag → capture version → publish.
+The only non-obvious part:
 
 ```yaml
----
-name: Release
-
-on:
-  push:
-    branches:
-      - main
-
-concurrency:
-  group: release-main
-  cancel-in-progress: true
-
-permissions:
-  contents: write  # Needed to push Git tags
-
-jobs:
-  build:
-    name: "Release"
-    runs-on: ubuntu-latest
-    env:
-      KOTLIN_CLI_NO_WELCOME_BANNER: "1"
-    steps:
-      # Log in to whatever container registry the image plugin pushes to.
-      # (Swap this step for your provider's login action / CLI.)
-      - name: Log in to container registry
-        run: echo "$REGISTRY_TOKEN" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USER" --password-stdin
-        env:
-          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
-          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Verify
-        run: |
-          ./kotlin clean
-          ./kotlin check
-          ./kotlin test
-
       - name: Tag release
         run: ./kotlin do release
 
       - name: Resolve current release version
         id: tag_version
         run: |
-          # Read the tag the release just created — do NOT parse `./kotlin do currentVersion`
-          # stdout (it is a decorated log line and ends with a `<task> successful` banner).
+          # Read the tag the release just created. Do NOT parse `./kotlin do currentVersion`
+          # stdout: it is a decorated log line followed by a `<task> successful` banner.
           current_version=$(git describe --tags --exact-match HEAD | sed 's/^v//')
-          echo "Version set to: $current_version"
           echo "version=$current_version" >> $GITHUB_OUTPUT
 
       - name: Build and publish Docker image
         run: ./kotlin do jib
 ```
 
-Notes:
+Dynamic image tags reach the plugin through an env var read inside the task action (no `-P`/`-D`). Document
+the variable in the plugin's README.
 
-- Resolve the released version from a side channel, not `./kotlin do <cmd>` stdout — the toolchain wraps task output in a log line and appends a `<task> successful` banner, so `| tail -n1` captures the banner, not the value. Read the git tag (above) or have the plugin write the version to a file named by an env var and `cat` it.
-- Dynamic tags for the image are pushed into the image plugin via env vars consumed inside the task action (Toolchain has no `-Pkey=value` for CLI overrides). Document the env var in the plugin's README.
+## 12. `.github/dependabot.yml`
 
-## 12. `.github/dependabot.yml` — group new local-plugin deps
-
-The migration adds new runtime libraries (jib-core, jgit, bouncycastle, slf4j-nop, detekt-cli, ktlint-cli) that didn't exist as catalog entries before. Group them so Dependabot consolidates PRs:
+Group the new local-plugin runtime libraries so Dependabot consolidates PRs, and drop pre-existing groups
+whose patterns no longer match the catalog.
 
 ```yaml
 version: 2
@@ -497,18 +480,8 @@ updates:
       day: "monday"
     open-pull-requests-limit: 5
     groups:
-      ktor:
-        patterns: ["io.ktor*"]
-      arrow:
-        patterns: ["io.arrow-kt*"]
-      testing:
-        patterns: ["io.kotest*", "io.mockk*"]
-      exposed:
-        patterns: ["org.jetbrains.exposed*"]
       detekt:
         patterns: ["io.gitlab.arturbosch.detekt*", "com.github.marc0der*"]
-      ktlint:
-        patterns: ["com.pinterest.ktlint*"]
       jib:
         patterns: ["com.google.cloud.tools*"]
       release-plugin:
@@ -519,78 +492,16 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
 ```
-
-Drop any pre-existing groups whose patterns no longer match the catalog (e.g. a `kotlin: org.jetbrains.kotlin*` group becomes dead if the migration removed Kotlin coordinates from the catalog in favour of toolchain-managed versions).
 
 ## 13. `.gitignore`
 
-Replace any Gradle-specific lines with the Toolchain build directory:
+Replace the Gradle-specific lines with:
 
 ```
 # Kotlin Toolchain
 build/
 ```
 
-The Toolchain also writes to `~/Library/Caches/JetBrains/Kotlin/` (macOS) / `~/.cache/JetBrains/Kotlin/` (Linux) — those are outside the repo and don't need ignoring.
-
-## 14. PR description scaffold
-
-```markdown
-## Summary
-
-Replaces the Gradle build with the Kotlin Toolchain (Amper engine), driven by
-`./kotlin build / test / check / do <command>` via the bundled wrapper.
-
-- Single root config — module.yaml + project.yaml at the repo root, layout maven-like
-  so no source files move. The existing gradle/libs.versions.toml is reused verbatim
-  as the Toolchain's `$libs.*` catalog.
-- N local plugins (plugins/{release,jib,detekt,ktlint,package}/) reimplementing the
-  Gradle plugins they replace, per the kotlin-toolchain guidance "reimplement instead
-  of adapt".
-  - release/ — replaces axion-release. JGit-based; derives the version from git tags.
-  - jib/ — replaces Gradle jib plugin; wraps jib-core directly.
-  - detekt/ — runs detekt-cli in a subprocess; useTypeResolution defaults to false to
-    match Gradle's default detekt task behaviour.
-  - ktlint/ — runs ktlint-cli in a subprocess.
-  - package/ — stages the application JAR at build/libs/<name>.jar for CI uploads.
-- CI workflows rewritten to call ./kotlin directly. The setup-java step is gone; the
-  ./kotlin wrapper auto-provisions its own JDK.
-- build.gradle.kts retained as an empty stub so Dependabot continues to find the
-  catalog (see file comment for details).
-
-## What's preserved
-
-- gradle/libs.versions.toml — single source of truth for all versions, reused as-is.
-- detekt.yml, .editorconfig, docker-compose.yml, all source under src/ — unchanged.
-
-## What replaces what
-
-| Old | New |
-|---|---|
-| ./gradlew build | ./kotlin build |
-| ./gradlew test | ./kotlin test |
-| ./gradlew check | ./kotlin check |
-| ./gradlew run | ./kotlin run |
-| ./gradlew currentVersion | ./kotlin do currentVersion |
-| ./gradlew release | ./kotlin do release |
-| ./gradlew jib | ./kotlin do jib |
-| ./gradlew ktlintFormat | ./kotlin do ktlintFormat |
-
-## Test plan
-
-- [x] ./kotlin show modules — clean, all expected modules listed
-- [x] ./kotlin clean && ./kotlin build — succeeds
-- [x] ./kotlin do currentVersion — prints git-derived version
-- [x] ./kotlin do ktlintFormat — succeeds
-- [x] ./kotlin task :<module>:analyze@detekt — clean checkstyle report
-- [x] ./kotlin do jibBuildTar — produces OCI image tar
-- [ ] ./kotlin test (testcontainers) — runs on CI ubuntu-latest only
-
-## Notes / follow-ups
-
-- mongo:3.2 is amd64-only and crashes on Apple Silicon under Rosetta. Pre-existing host
-  incompatibility unchanged by this PR; CI on ubuntu-latest is unaffected.
-- ...
-```
+The Toolchain's other caches live outside the repo (`~/Library/Caches/JetBrains/Kotlin/`,
+`~/.cache/JetBrains/Kotlin/` on Mac).

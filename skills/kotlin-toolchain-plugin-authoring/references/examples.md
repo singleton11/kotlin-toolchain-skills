@@ -1,8 +1,10 @@
-# Plugin authoring patterns — concrete code
+# Plugin authoring patterns
 
-Ready-to-adapt snippets for writing a Kotlin Toolchain local plugin. Adapt names, packages, imports, and types to your domain. The running example throughout is a release / version-stamping plugin — it happens to exercise every plugin-authoring mechanism (settings, task actions, `@Input`/`@Output`, generated resources, env-var overrides) in one place; map the shapes onto your own plugin's domain.
+Snippets to adapt — rename packages and types to your domain. The running example is a release /
+version-stamping plugin, because it exercises every mechanism (settings, task actions, `@Input`/`@Output`,
+generated resources, env-var overrides) in one place.
 
-## 1. `project.yaml` — registering the plugin
+## 1. `project.yaml`
 
 ```yaml
 modules:
@@ -13,9 +15,7 @@ plugins:
   - ./plugins/<name>
 ```
 
-Without the top-level `plugins:` block the plugin id is unresolvable from any consumer module.
-
-## 2. `plugins/<name>/module.yaml` — the plugin module
+## 2. `plugins/<name>/module.yaml`
 
 ```yaml
 product: jvm/amper-plugin
@@ -38,8 +38,6 @@ settings:
 
 ## 3. `@Configurable interface Settings`
 
-Defaults via interface getters. Nested blocks become nested `@Configurable` interfaces.
-
 ```kotlin
 package com.example.release
 
@@ -51,7 +49,6 @@ interface Settings {
     val initialVersion: String get() = "0.1.0"
     val ignoreUncommittedChanges: Boolean get() = false
     val releaseBranchPattern: String get() = "main|master"
-
     val checks: ChecksSettings
 }
 
@@ -59,6 +56,7 @@ interface Settings {
 interface ChecksSettings {
     val uncommittedChanges: Boolean get() = true
     val aheadOfRemote: Boolean get() = true
+    val snapshotDependencies: Boolean get() = true
 }
 ```
 
@@ -70,13 +68,10 @@ plugins:
     enabled: true
     tagPrefix: "v"
     initialVersion: "0.1.0"
-    releaseBranchPattern: "main|master"
+    ignoreUncommittedChanges: false
     checks:
-      uncommittedChanges: true
       aheadOfRemote: true
 ```
-
-Anything not specified uses the interface default.
 
 ## 4. `@TaskAction` — one per file under `src/tasks/`
 
@@ -102,22 +97,14 @@ fun currentVersion(
 }
 ```
 
-Key points:
-- Top-level `fun`, not a method on a class.
-- `@Input` / `@Output` on `Path` parameters declare build-graph inputs/outputs.
-- The `Settings` parameter is wired separately in `plugin.yaml` (see section 6).
-- Print to `println(...)` for user-visible output; Toolchain captures stdout.
+## 5. File-based publication — the `project.version` analog
 
-## 5. `@TaskAction(executionAvoidance = ExecutionAvoidance.Disabled)` — hidden inputs
-
-Use when the task's true input is Git state, network, environment variables, or anything else Toolchain cannot fingerprint via `@Input`.
+One task writes the value into its `@Output`; everything else reads it from there. Execution avoidance is
+disabled because the real input is Git state.
 
 ```kotlin
 package com.example.release.tasks
 
-import com.example.release.Settings
-import com.example.release.git.GitRepo
-import com.example.release.version.VersionPipeline
 import org.jetbrains.amper.plugins.ExecutionAvoidance
 import org.jetbrains.amper.plugins.Input
 import org.jetbrains.amper.plugins.Output
@@ -146,9 +133,33 @@ fun writeVersion(
 }
 ```
 
-The `outputDir` parameter must be the *same* `Path` you write to — otherwise downstream consumers depending on `${tasks.writeVersion.action.outputDir}` won't find the result.
+Build-time consumer — declare `@Input` on a matching path and the dependency is inferred:
 
-## 6. `plugin.yaml` — tasks, commands, generated
+```kotlin
+@TaskAction
+fun packageWithVersion(@Input versionFile: Path) {
+    val version = versionFile.readText().trim()
+    // ...
+}
+```
+
+```yaml
+tasks:
+  packageWithVersion:
+    action: !com.example.packageWithVersion
+      versionFile: ${tasks.writeVersion.action.outputDir}/META-INF/release/version.txt
+```
+
+Runtime consumer — the directory is registered under `generated.resources` (§6), so the file is on the
+classpath:
+
+```kotlin
+fun version(): String? =
+    object {}.javaClass.getResourceAsStream("/META-INF/release/version.txt")
+        ?.bufferedReader()?.use { it.readText().trim() }
+```
+
+## 6. `plugin.yaml`
 
 ```yaml
 tasks:
@@ -172,76 +183,19 @@ generated:
   resources:
     - directory: ${tasks.writeVersion.action.outputDir}
 
-# Public entry points invoked via `./kotlin do <name>`.
-# `writeVersion` stays out — it's a build-graph contributor (its @Output is
-# wired into generated.resources above) and runs automatically when something
-# downstream needs the version file.
+# `writeVersion` stays out of commands: its @Output feeds generated.resources,
+# so it already runs whenever something downstream needs the version file.
 commands:
   - currentVersion
   - release
 ```
 
-Key points:
-- `!com.example.release.tasks.currentVersion` is the YAML tag form, addressing the `@TaskAction` function by fully-qualified name.
-- Every `Settings` parameter needs its own `settings: ${pluginSettings}` line. Missing this is the single most common wiring mistake.
-- `${tasks.<task>.action.<param>}` cross-references another task's parameter — use it to compose outputs into `generated.*` blocks or into other tasks' `@Input` parameters.
+`!com.example.release.tasks.currentVersion` is the YAML tag form addressing a `@TaskAction` by
+fully-qualified name.
 
-## 7. File-based publication — the `project.version` analog
+## 7. Environment-variable overrides
 
-Toolchain has no shared mutable build state. To publish a value from one task to other tasks (or to runtime code), write a file in your `@Output` directory:
-
-```kotlin
-@OptIn(ExperimentalPathApi::class)
-@TaskAction(executionAvoidance = ExecutionAvoidance.Disabled)
-fun writeVersion(
-    @Input moduleRootDir: Path,
-    @Output outputDir: Path,
-    settings: Settings,
-) {
-    // ... compute inferred ...
-    val versionFile = outputDir / "META-INF" / "release" / "version.txt"
-    versionFile.createParentDirectories()
-    versionFile.writeText(inferred.version + "\n")
-}
-```
-
-Two consumption paths feed off the same `@Output`:
-
-### Build-time (another `@TaskAction`)
-
-Declare `@Input` on a matching path; Toolchain auto-infers the dependency:
-
-```kotlin
-@TaskAction
-fun packageWithVersion(
-    @Input versionFile: Path,
-    // ...
-) {
-    val version = versionFile.readText().trim()
-    // ...
-}
-```
-
-```yaml
-tasks:
-  packageWithVersion:
-    action: !com.example.packageWithVersion
-      versionFile: ${tasks.writeVersion.action.outputDir}/META-INF/release/version.txt
-```
-
-### Runtime (application classpath)
-
-Register the directory under `generated.resources` in `plugin.yaml` (see section 6). The file lands on the JAR classpath:
-
-```kotlin
-fun version(): String? =
-    object {}.javaClass.getResourceAsStream("/META-INF/release/version.txt")
-        ?.bufferedReader()?.use { it.readText().trim() }
-```
-
-## 8. Environment-variable overrides
-
-Toolchain has no `-P` properties. For ephemeral CLI overrides, read env vars inside the action — passing the env map through a constructor parameter keeps logic unit-testable.
+Take the env map as a constructor parameter so tests can pass a controlled one.
 
 ```kotlin
 class VersionPipeline(
@@ -259,101 +213,7 @@ private fun String?.asBoolean(): Boolean =
     this != null && this.equals("true", ignoreCase = true)
 ```
 
-Document every recognised env var in the plugin's README so consumers know which overrides exist.
-
-## 9. Sharing logic across task actions
-
-Two or more `@TaskAction`s frequently share steps. Extract each step into an `internal fun` in a sibling file (not annotated with `@TaskAction`). The individual-step task and the combo task both call the same helpers.
-
-```kotlin
-package com.example.release.tasks
-
-import com.example.release.Settings
-import com.example.release.checks.ReleaseChecks
-import com.example.release.git.GitRepo
-import com.example.release.version.VersionPipeline
-
-internal fun verifyOrFail(repo: GitRepo, settings: Settings, pipeline: VersionPipeline) {
-    val failures = ReleaseChecks(settings, pipeline).run(repo)
-    if (failures.isNotEmpty()) {
-        error(failures.joinToString(prefix = "Pre-release checks failed:\n  - ", separator = "\n  - "))
-    }
-}
-
-internal fun createReleaseTag(
-    repo: GitRepo,
-    settings: Settings,
-    pipeline: VersionPipeline,
-): String { /* ... */ }
-
-internal fun pushReleaseTag(repo: GitRepo, tagName: String) { /* ... */ }
-```
-
-The combo task is then one `@TaskAction` sharing a single resource (`GitRepo`) across all three steps:
-
-```kotlin
-@TaskAction
-fun release(
-    @Input moduleRootDir: Path,
-    settings: Settings,
-) {
-    val pipeline = VersionPipeline(settings)
-    GitRepo.open(moduleRootDir, settings.repoDir).use { repo ->
-        verifyOrFail(repo, settings, pipeline)
-        val tagName = createReleaseTag(repo, settings, pipeline)
-        pushReleaseTag(repo, tagName)
-    }
-}
-```
-
-Each individual step also gets exposed as its own `@TaskAction` for the "stage now, finish later" workflow:
-
-```kotlin
-@TaskAction
-fun createRelease(@Input moduleRootDir: Path, settings: Settings) {
-    val pipeline = VersionPipeline(settings)
-    GitRepo.open(moduleRootDir, settings.repoDir).use { repo ->
-        verifyOrFail(repo, settings, pipeline)
-        createReleaseTag(repo, settings, pipeline)
-    }
-}
-```
-
-Both paths back into the same shared helpers, so implementations cannot drift.
-
-## 10. Pre-action verification pattern
-
-For plugins with pre-action checks (axion's `verifyRelease`, schema validation, contract tests), extract them into a dedicated class taking settings + env. Run inside the `@TaskAction`; turn a non-empty failure list into a single `error(...)`.
-
-```kotlin
-class ReleaseChecks(
-    private val settings: Settings,
-    private val pipeline: VersionPipeline,
-    private val env: Map<String, String?> = System.getenv(),
-) {
-    fun run(repo: GitRepo): List<String> {
-        if (env["RELEASE_DISABLE_CHECKS"].asBoolean()) return emptyList()
-
-        val failures = mutableListOf<String>()
-
-        if (settings.checks.uncommittedChanges && !settings.ignoreUncommittedChanges) {
-            if (repo.isDirty()) {
-                failures += "Working tree has uncommitted changes. " +
-                    "Commit or stash them, set ignoreUncommittedChanges=true in module.yaml, " +
-                    "or run with RELEASE_DISABLE_UNCOMMITTED_CHECK=true."
-            }
-        }
-        // ... more checks
-        return failures
-    }
-}
-```
-
-Every failure message should name (1) the setting that toggles it off and (2) the env var that bypasses it for an ad-hoc run. Diagnostic ergonomics are the difference between a debuggable plugin and a frustrating one.
-
-## 11. Consumer / validation module
-
-A small consumer in the same repo doubles as an integration-test harness and a getting-started example.
+## 8. Consumer module as validation harness
 
 ```yaml
 # consumer-app/module.yaml
@@ -376,7 +236,7 @@ settings:
 ```
 
 ```kotlin
-// consumer-app/src/main.kt — exercises whatever the plugin publishes
+// consumer-app/src/main.kt
 package com.example.demo
 
 private const val VERSION_RESOURCE = "/META-INF/release/version.txt"
@@ -393,22 +253,8 @@ private fun readVersionFromClasspath(): String? =
         ?.takeIf { it.isNotEmpty() }
 ```
 
-Smoke test:
-
 ```sh
 ./kotlin run :consumer-app
-./kotlin do <command-name>          # invokes the plugin's public commands
-./kotlin show commands              # lists everything in plugin.yaml's commands: block
-```
-
-## 12. `.gitignore` — write this first
-
-Add **before** the first commit, otherwise build output ends up in your initial commit and every dirty-tree check will spuriously fail thereafter.
-
-```
-build/
-.kotlin/
-.idea/
-*.iml
-.DS_Store
+./kotlin do <command-name>
+./kotlin show commands
 ```

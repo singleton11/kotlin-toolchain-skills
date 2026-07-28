@@ -1,218 +1,358 @@
 ---
 name: gradle-to-kotlin-toolchain-project
-description: Migrate an entire Gradle Kotlin/JVM project to Kotlin Toolchain — module.yaml + project.yaml, dependency-catalog reuse, CI rewrite, and the local plugins that replace Gradle plugins with no native Toolchain equivalent. TRIGGER when the user asks to convert, migrate, port, or move a Gradle project (build.gradle / build.gradle.kts at the repo root) to Kotlin Toolchain or Amper; when the repo currently has a Gradle wrapper + build script and the user wants to switch the whole build, not just port one plugin; when the conversation references replacing Gradle plugins (the `application` plugin, git-tag versioning such as axion-release, container-image building such as jib, linters such as detekt/ktlint, custom `processResources`/codegen tasks) with Toolchain equivalents at the project level; when adapting an existing CI pipeline (`./gradlew build`, `./gradlew check`, `./gradlew release`) to `./kotlin` commands. SKIP for porting a single Gradle plugin in isolation (use the `gradle-to-kotlin-toolchain-plugin` skill), for authoring a new Toolchain plugin from scratch (use `kotlin-toolchain-plugin-authoring`), and for general Kotlin Toolchain project work where Gradle is already gone (use `kotlin-toolchain`).
+description: Migrate an entire Gradle Kotlin/JVM project to Kotlin Toolchain — module.yaml + project.yaml, dependency-catalog reuse, CI rewrite, and the local plugins that replace Gradle plugins with no native Toolchain equivalent. TRIGGER when the user asks to convert, migrate, port, or move a Gradle project (build.gradle / build.gradle.kts at the repo root) to Kotlin Toolchain or Amper; when the repo currently has a Gradle wrapper + build script and the user wants to switch the whole build, not just port one plugin; when the conversation references replacing Gradle plugins (the `application` plugin, git-tag versioning such as axion-release, container-image building such as jib, linters such as detekt/ktlint, custom `processResources`/codegen tasks) with Toolchain equivalents at the project level; when adapting an existing CI pipeline (`./gradlew build`, `./gradlew check`, `./gradlew release`) to `./kotlin` commands; when translating `gradle/libs.versions.toml` — including version-catalog `[bundles]`, which have no Toolchain equivalent and become module templates; when the repo has `buildSrc`/`build-logic` convention plugins or `allprojects`/`subprojects` blocks that must become module templates. SKIP for porting a single Gradle plugin in isolation (use the `gradle-to-kotlin-toolchain-plugin` skill), for authoring a new Toolchain plugin from scratch (use `kotlin-toolchain-plugin-authoring`), and for general Kotlin Toolchain project work where Gradle is already gone (use `kotlin-toolchain`).
 ---
 
 # Gradle → Kotlin Toolchain Project Migration
 
-Migrating a whole Gradle Kotlin/JVM project to Kotlin Toolchain is two distinct exercises stapled together: a mostly-mechanical **translation** of dependencies and configuration, plus a non-trivial set of **plugin replacements** for everything Gradle did via plugins that Toolchain has no native answer for. This skill is the project-level playbook; it leans on the companion skills for the plugin pieces.
+Two jobs at once: a mechanical translation of dependencies and configuration, plus a replacement for every
+Gradle plugin the Toolchain has no native answer for. Templates to adapt are in
+[references/examples.md](references/examples.md), drawn from one real migration.
 
-Read [references/examples.md](references/examples.md) for ready-to-adapt code: a JVM-app `module.yaml`, a multi-plugin `project.yaml`, the smallest hand-written plugin (a `package` plugin producing a stable `build/libs/` artifact), and CI workflow templates. That reference code is drawn from one real migration — treat it as a template to adapt, not a fixed recipe.
+Lean on the companion skills for the plugin-shaped subproblems: `kotlin-toolchain` for syntax,
+`gradle-to-kotlin-toolchain-plugin` for the per-plugin port workflow (you will run it once per Gradle plugin
+without a native equivalent), `kotlin-toolchain-plugin-authoring` for plugins written from scratch.
 
-The companion skills handle the plugin-shaped subproblems:
+## Principles
 
-- **`kotlin-toolchain`** — Toolchain syntax reference (module.yaml shape, layout, catalogs). Cite from here rather than re-explaining.
-- **`gradle-to-kotlin-toolchain-plugin`** — the per-plugin port workflow (concept-mapping table, MVP scoping, validation pattern). You will end up running this workflow several times (once per Gradle plugin without a native).
-- **`kotlin-toolchain-plugin-authoring`** — for plugins you write from scratch (no Gradle source to port), like a `package` plugin to stabilise CI artifact paths.
+1. **Preserve source code.** If the migration forces edits to business logic, a local plugin can probably
+   fill the gap instead. Code reading `release.properties` off the classpath should keep working — publish
+   that exact file, don't rewrite the consumer.
+2. **Every third-party Gradle plugin is drop, native, or reimplement** — never "keep the Gradle plugin".
+   **Your own convention plugins are different**: `buildSrc` / `build-logic` precompiled scripts are shared
+   *configuration*, so they become module templates, not local plugins — see "No `buildSrc` / convention
+   plugins".
+3. **Search GitHub before authoring a local plugin.** Someone has probably already written it; vendoring a
+   working implementation beats a from-scratch port every time. Where to look and what to search for: Phase 2
+   "Scope". Author only after the search comes up empty.
+4. **All dependencies should reside in version catalog.** `gradle/libs.versions.toml` survives as the built-in `$libs.*`
+   catalog. Every coordinate in every module/plugin YAML must end up as a `$libs.*` reference. `[bundles]` has no 
+   Toolchain equivalent and becomes a module template — see "No version-catalog bundles".
 
-## Migration philosophy
-
-1. **Preserve source code wherever possible.** If the migration is forcing edits to business logic, that's a strong signal a local plugin can fill the gap instead. Application code that reads `release.properties` from the classpath, for instance, should keep working — write a plugin that publishes that exact file, don't rewrite the consumer to read a different format.
-2. **Treat every Gradle plugin as either "drop", "use Toolchain native", or "reimplement as a local plugin"** — never "use Gradle plugin". Toolchain cannot consume Gradle plugins; do not try.
-3. **The version catalog is the migration's pivot.** `gradle/libs.versions.toml` is byte-identical before and after; Toolchain reads it as the built-in `$libs.*` catalog. Every Maven coordinate in any plugin YAML or module YAML must end up as a `$libs.*` reference — that's the single source of truth for Dependabot post-migration.
-4. **Land it as a single commit if possible.** A whole-project migration churns enough files that splitting commits hurts review (and the in-between commits don't build). Aim for one well-titled commit (`build: migrate to Kotlin Toolchain`) with a comprehensive PR description.
-
-## Migration workflow
-
-Five phases in order. Skipping investigation routinely produces migrations that miss subtle behavioural mismatches (notably around linting and resource generation).
+## Workflow
 
 ### Phase 1 — Inventory the Gradle build
 
-Before any YAML is written, produce a written inventory of the existing build:
+Write the inventory down (e.g. `MIGRATION_PLAN.md`) before any YAML; it becomes the checklist the PR
+description verifies.
 
-- **All plugins** in `build.gradle(.kts)`'s `plugins { }` block. Categorise each as:
-  - **Drop** — Gradle-only behaviour not needed under Toolchain (e.g. the wrapper-generation plugin).
-  - **Native** — covered by `module.yaml` directly (`org.jetbrains.kotlin.jvm`, `org.jetbrains.kotlin.plugin.serialization`, the `application` plugin's `mainClass`, JDK toolchains, BOM imports, scope qualifiers).
-  - **Local plugin** — needs reimplementation (typical: `axion-release`, `jib`, `detekt`, `ktlint`, anything that wires custom tasks into `check`).
-- **All custom tasks** registered in the build script (`tasks.register("...")`, `tasks.named("...")`). Note their inputs, outputs, and what wires them into the build graph (`processResources.dependsOn(...)`, `check.dependsOn(...)`). Each one is a future `@TaskAction` in some plugin.
-- **All source-code dependencies on build-generated artefacts.** Grep `src/` for resource names that are produced by custom tasks (e.g. a service that reads a `release.properties` / `version.txt` off the classpath, where the file is written by a custom `generate…` Gradle task). Each of these is a constraint the migration must honour without source changes.
-- **`gradle/libs.versions.toml`** — note which `[versions]` and `[plugins]` entries are *only* used by Gradle plugins (those become dead weight to remove later).
-- **CI workflows** — every `./gradlew <task>` invocation must map to a `./kotlin` command or be replaced. Note artefact upload paths (typically `build/libs/`), version-extraction shell pipelines, and any `-P` property flags.
+- **Plugins** in the `plugins { }` block, each sorted into native / local plugin. Native covers
+  `org.jetbrains.kotlin.jvm`, `kotlin.plugin.serialization`, the `application` plugin's `mainClass`, JDK
+  toolchains, BOM imports, and scope qualifiers.
+- **Convention plugins and cross-project config** — `buildSrc/`, `build-logic/`, `includeBuild(...)`,
+  precompiled script plugins (`*-conventions.gradle.kts`), and `allprojects {}` / `subprojects {}` blocks.
+  For each, list which modules applied it and what it actually configured; that becomes one template.
+- **Custom tasks** (`tasks.register`, `tasks.named`) with their inputs, outputs, and wiring
+  (`processResources.dependsOn(...)`, `check.dependsOn(...)`). Each becomes a `@TaskAction`.
+- **Source dependencies on build-generated artifacts.** Grep `src/` for resource names produced by custom
+  tasks (`release.properties`, `version.txt`). Each is a constraint to honor without touching source.
+- **`gradle/libs.versions.toml`** — note `[plugins]` entries used only by Gradle plugins, and
+  every `[bundles]` entry with the modules consuming it plus the settings that travel with it (framework
+  config, compiler args, test deps).
+- **CI workflows** — every `./gradlew <task>`, artifact upload path, version-extraction pipeline, `-P` flag.
 
-Save this inventory as a markdown plan (e.g. `MIGRATION_PLAN.md`); it becomes the checklist the PR description verifies.
+### Phase 2 — Decide layout, plugin set, and scope
 
-### Phase 2 — Decide layout, scope, and the plugin set
+**Layout: `maven-like`.** Gradle projects use `src/main/kotlin` etc.; the Toolchain defaults to
+`src`/`test`/`resources`/`testResources`. Set `layout: maven-like` in `module.yaml` and no source file moves.
+Supported for `jvm/app` and `jvm/lib`.
 
-These three decisions shape everything that follows:
-
-#### Layout: `maven-like`
-
-Gradle projects use Maven layout (`src/main/kotlin`, `src/main/resources`, `src/test/kotlin`, `src/test/resources`). Toolchain's default layout is `src`/`test`/`resources`/`testResources`. To avoid moving every source file, set `layout: maven-like` in `module.yaml`. This is fully supported for `jvm/app` and `jvm/lib` products and is the migration-friendly choice.
-
-#### Plugin set
-
-Sort every Gradle plugin from the Phase 1 inventory into one of three buckets — **drop**, **use Toolchain native**, or **reimplement as a local plugin** — never "keep using the Gradle plugin" (Toolchain cannot consume Gradle plugins). The table below lists the categories that recur in JVM projects, with representative plugins as examples; your project will hit some subset, not all of them.
+**Plugin set.** The categories that recur in JVM projects:
 
 | Gradle plugin / feature (examples) | Replacement | Notes |
 |---|---|---|
-| Kotlin/JVM + serialization (`org.jetbrains.kotlin.jvm`, `kotlin.plugin.serialization`) | **Native** (`settings.jvm.jdk`, `settings.kotlin.serialization: json`) | Use `$libs.*` for Kotlin libs if you want pin control; otherwise the toolchain default applies. |
-| The `application` plugin (mainClass + `build/libs/<name>.jar`) | **Native** for the entry point (`settings.jvm.mainClass`); a small **`package` local plugin** for the JAR's *location* so CI has a stable upload path — see [references/examples.md](references/examples.md). |
-| Git-tag versioning (e.g. `axion-release`) | A **`release` local plugin** (typically JGit-based). Vendor one if it exists; otherwise port it via the `gradle-to-kotlin-toolchain-plugin` skill. Publishes the version as a file (e.g. `META-INF/<group>/version.txt`) under `generated.resources`. |
-| Container-image building (e.g. `jib`) | A **local plugin** wrapping the tool's own library (e.g. `jib-core`) directly. When vendoring a community sample, expect to extend its settings (ports, environment, user are commonly omitted) **and verify it applies every configured tag** — a bare push often emits only the implicit `latest`; read CI tag overrides from an env var (Toolchain has no `-P`/`-D`). |
-| Linters (e.g. `detekt`, `ktlint`) | A **local plugin** that subprocess-launches the tool's CLI. Vendor a known-good one where it exists; otherwise hand-write along the same shape. **Re-check the vendored plugin's defaults against the Gradle plugin** — see "Mismatches to watch". |
-| Custom `generateXyz` / `processResources` tasks | An additional **`@TaskAction`** on the relevant plugin (often the release plugin). Output dir wired into `generated.resources`. |
+| Kotlin/JVM + serialization | Native (`settings.jvm.jdk`, `settings.kotlin.serialization: json`) | Use `$libs.*` for Kotlin libs if you want pin control. |
+| `application` plugin | Native `settings.jvm.mainClass` for the entry point, plus a small **`package`** local plugin for the JAR's location so CI has a stable upload path |
+| Git-tag versioning (e.g. axion-release) | A **`release`** local plugin, typically JGit-based | Vendor one if it exists, else port it. Publishes the version as a file under `generated.resources`. |
+| Container images (e.g. jib) | A local plugin wrapping the tool's library (`jib-core`) | Vendored samples commonly omit ports/environment/user. Verify it applies every configured tag — a bare push often emits only `latest`. Read CI tag overrides from an env var. |
+| Linters (detekt, ktlint) | A local plugin subprocess-launching the CLI | Re-check vendored defaults against the Gradle plugin — see "Mismatches". |
+| Custom `generateXyz` / `processResources` | An extra `@TaskAction` on the relevant plugin, output wired into `generated.resources` |
+| Version catalog `[bundles]` | A **module template** per bundle (`<name>.module-template.yaml` + `apply:`) | Fold the framework's settings and test deps into the template too — see "No version-catalog bundles" |
+| `buildSrc` / `build-logic` convention plugins, `allprojects {}` / `subprojects {}` | A **module template** per convention script; only its imperative leftovers become a local plugin | Convention hierarchies map onto nested templates — see "No `buildSrc` / convention plugins" |
 
-Each local plugin is its own `jvm/amper-plugin` module under `plugins/<name>/`. Wire them all from `project.yaml`:
+Each local plugin is a `jvm/amper-plugin` module.
 
-```yaml
-modules:
-  - plugins/<name1>
-  - plugins/<name2>
-  ...
-plugins:
-  - ./plugins/<name1>
-  - ./plugins/<name2>
-  ...
-```
+**Scope.** For every plugin on the list, **search GitHub before writing any Kotlin**. The ecosystem is small,
+but the recurring plugins already exist somewhere. Search order:
 
-#### Scope tiers
+1. `JetBrains/kotlin-toolchain` → [`build-sources/`](https://github.com/JetBrains/kotlin-toolchain/tree/main/build-sources)
+   (`detekt`, `dokka`, `binary-compatibility-validator`, `protobuf`, `generate-build-properties`,
+   `project-commands`) — the local plugins the Toolchain builds itself with, i.e. de facto reference
+   implementations. Also `plugin-samples/` and `docs/` in the same repo.
+2. GitHub code search on the plugin marker rather than the tool name:
+   `"product: jvm/amper-plugin"`, `path:plugin.yaml "@TaskAction"`, `"jvm/amper-plugin" jib`.
+3. The tool's own repo — most linters/packagers ship a `-cli` or `-core` artifact, which is all a thin wrapper
+   plugin needs, so "no plugin exists" often still means "a 50-line wrapper exists".
 
-For each candidate local plugin, decide between **vendor** (copy a known-working source from a public repo), **author** (write from scratch following `kotlin-toolchain-plugin-authoring`), or **extend** (vendor and add fields).
-
-A reasonable default for a single migration PR: vendor the plugins that already have a known-good Toolchain source, author the small or bespoke ones (a `package` plugin, a thin linter wrapper), and defer anything non-essential (e.g. publishing to Maven Central) to a follow-up.
+Then pick per plugin: **vendor** (copy a hit as-is; keep its license header and add a comment with the source
+URL + commit so it can be re-synced), **extend** (vendor + extra Settings fields), or **author** (nothing
+found, or the need is bespoke). Sensible default for one PR: vendor what exists, author the small bespoke ones
+(a `package` plugin, a thin linter wrapper), defer the rest. Always diff a vendored plugin's behavior against
+the Gradle plugin it replaces before trusting it — see "A vendored linter plugin can be stricter than the
+Gradle plugin".
 
 ### Phase 3 — Implement
 
-Recommended order, top-down so each step is testable:
-
-1. **Bring in the wrapper.** `cp` `kotlin` and `kotlin.bat` from any reference Toolchain project (or run `kotlin init` in a scratch dir). Pin the version in `.sdkmanrc` (`kotlintoolchain=<version>`) so it matches the wrapper.
-2. **Write `project.yaml`** registering all the plugin module paths (alphabetical order is conventional).
-3. **Vendor / author each plugin** under `plugins/<name>/`. Run `./kotlin show modules` after adding each to verify the project model still loads.
-4. **Write the root `module.yaml`.** `product: jvm/app`, `layout: maven-like`, dependencies as `$libs.*` references, `plugins:` block enabling each local plugin with the minimum non-default settings. Repeat `./kotlin show modules`.
-5. **Validate each plugin in isolation** via `./kotlin task :<module>:<task>@<plugin>` or `./kotlin do <command>`. Fix model errors as they surface.
-6. **Rewrite CI workflows** (see Phase 4).
-7. **Delete Gradle files** — `build.gradle.kts`, `gradlew`, `gradlew.bat`, `gradle/wrapper/` — but **keep `gradle/libs.versions.toml`**; it's still the catalog.
-8. **Sweep `gradle/libs.versions.toml`** for now-unused entries — every former `[plugins]` block entry and any `[versions]` keys that only fed those plugins.
-9. **Sweep plugin YAMLs for hardcoded coordinates.** Every literal Maven coordinate in `module.yaml` or `plugins/*/plugin.yaml` should be a `$libs.<key>` reference to the catalog. This is the rule the migration must end on.
+1. Copy `kotlin` / `kotlin.bat` from a reference Toolchain project (for example [this one](https://github.com/JetBrains/kotlin-toolchain)) or `kotlin init` in a scratch dir. Pin
+   `kotlintoolchain=<version>` in `.sdkmanrc` to match the wrapper.
+2. Write `project.yaml` with all plugin module paths.
+3. Per plugin: search GitHub first (Phase 2 "Scope"), then vendor or author it under `plugins/<name>/`,
+   running `./kotlin show modules` after each to confirm the model still loads.
+4. Write the templates at the project root: one `<name>.module-template.yaml` per convention script and per
+   `[bundles]` entry with two or more consumers (dependencies plus the settings, test deps, and repositories
+   that travel with them), nested the way the Gradle conventions were.
+5. Write the root `module.yaml`: `product: jvm/app`, `layout: maven-like`, `$libs.*` dependencies, an
+   `apply:` list for the templates, and a `plugins:` block enabling each local plugin with its non-default
+   settings.
+6. Validate each plugin in isolation: `./kotlin task :<module>:<task>@<plugin>` or `./kotlin do <command>`.
+7. Rewrite CI (Phase 4).
+8. Delete `build.gradle.kts`, `gradlew`, `gradlew.bat`, `gradle/wrapper/` — but keep
+   `gradle/libs.versions.toml`.
+9. Sweep the catalog: drop the whole `[plugins]` block, any `[versions]` keys that only fed it, and
+   `[bundles]` once every consumer applies a template.
+10. Sweep every `module.yaml` / `plugin.yaml` for literal Maven coordinates and replace them with
+    `$libs.<key>`.
 
 ### Phase 4 — Rewrite CI
 
-The migration mostly *simplifies* CI workflows:
-
-- **Drop `actions/setup-java`.** The `./kotlin` wrapper auto-provisions its own JDK on first run. Set `KOTLIN_CLI_NO_WELCOME_BANNER: "1"` at the job level to keep logs clean.
-- **`./gradlew build && ./gradlew check`** → `./kotlin build && ./kotlin check`. `kotlin check` runs every plugin's `checks:` registrations (your linters + tests).
-- **`./gradlew release`** → `./kotlin do release` (the release plugin exposes it as a command).
-- **`./gradlew currentVersion -q | …`** → resolve the version *without* `| tail -n1` (see "Capturing a command's output value" under Mismatches): read the tag the release just made (`git describe --tags --exact-match HEAD`) or a file the plugin writes. `tail -n1` returns the toolchain's `<task> successful` banner, not the version.
-- **`./gradlew jib -Djib.to.tags=…`** → `./kotlin do jib` with the tags supplied through an env var the plugin reads (no `-P`/`-D`/`--setting`). Confirm the plugin actually *applies* the tag list — see the container-image row in the plugin-set table.
-- **Artefact upload path** must change. Gradle's `build/libs/<name>.jar` is gone; the Toolchain's `jarJvm` task writes to a Toolchain-internal path. **Author a `package` local plugin** that stages the JAR at `${module.rootDir}/build/libs/${module.name}.jar` so CI's `actions/upload-artifact` line stays simple. See [references/examples.md](references/examples.md) for the 30-line plugin.
+- Set `KOTLIN_CLI_NO_WELCOME_BANNER: "1"`.
+- `./gradlew build && ./gradlew check` → `./kotlin build && ./kotlin check` (which runs every plugin's
+  `checks:` registrations plus tests).
+- `./gradlew jib -Djib.to.tags=…` → `./kotlin do jib`, with tags passed through an env var the plugin reads.
+  Vendored jib-style plugins usually lack that hook — add it while vendoring.
+- Artifact upload path changes: Gradle's `build/libs/<name>.jar` is gone and `jarJvm` writes to a
+  Toolchain-internal path. Author a `package` plugin staging the JAR at
+  `${module.rootDir}/build/libs/${module.name}.jar` so uploading artifacts stays simple.
 
 ### Phase 5 — Validate end-to-end
 
-Run each user-facing command at least once locally. Capture the outputs in the PR description's Test plan:
+Run each user-facing command locally and record the output in the PR's test plan:
 
 ```sh
 ./kotlin show modules            # project model loads, all expected modules listed
-./kotlin clean && ./kotlin build # main build path is clean
-./kotlin test                    # if local environment supports it (see host-incompatible containers below)
+./kotlin clean && ./kotlin build
+./kotlin test
 ./kotlin check                   # linters + tests; expect zero violations after Phase 3
-./kotlin do currentVersion       # release plugin reachable
-./kotlin do jib                  # or jibBuildTar to avoid pushing during local validation
-./kotlin do package              # if a package plugin exists; verify build/libs/<name>.jar exists with the right Main-Class manifest
-./kotlin do ktlintFormat         # round-trips cleanly
+./kotlin do currentVersion       # if applicable
+./kotlin do jib                  # or jibBuildTar to avoid pushing locally (if applicable)
+./kotlin do package              # verify build/libs/<name>.jar and its Main-Class manifest (if applicable)
+./kotlin do ktlintFormat         # if applicable
 ```
-
-Document each command's expected output in the PR description; reviewers will use it to compare against the CI run.
 
 ## Mismatches to watch
 
-These trip every project-level migration. Address each explicitly rather than waiting for surprise behaviour after merge.
+### No `${...}` interpolation in `module.yaml`
 
-### `module.yaml` does not support `${...}` interpolation
-
-A documented Toolchain limitation that comes up immediately in consumer config. Setting `configFile: ${module.rootDir}/detekt.yml` in `module.yaml` *does not interpolate* — the string is taken literally. Use a path relative to the module root instead (`configFile: detekt.yml`). `${...}` interpolation only works inside `plugin.yaml` (where it's resolved by the plugin SDK, not the YAML parser).
+`configFile: ${module.rootDir}/detekt.yml` is taken literally. Use a module-relative path
+(`configFile: detekt.yml`). Interpolation works only in `plugin.yaml`.
 
 ### Module name comes from the directory name
 
-There is no `name:` field in `module.yaml`. The module name is the basename of the directory containing the file. In CI this affects task output paths: `actions/checkout` clones the repo into a directory whose basename is the GitHub repo name, while a local worktree or a clone under a different folder name resolves `${module.name}` to something else entirely. Never hardcode the module name into a path you encode in plugin task outputs — use `${module.name}` so it follows the directory.
+There is no `name:` field. `actions/checkout` clones into a directory named after the GitHub repo, while a
+local worktree may resolve `${module.name}` to something else. Never hardcode the module name into a plugin
+task's output path — use `${module.name}`.
 
-### Plugin settings need `enabled: true` *or* the shorthand `<plugin>: enabled`
-
-Two valid forms for enabling a plugin in `module.yaml`:
+### Plugin settings without `enabled: true` are ignored
 
 ```yaml
 plugins:
-  release: enabled         # shorthand — only valid when no other settings are set
-  jib:                     # long form — required when any setting is configured
+  release: enabled         # shorthand — only valid with no other settings
+  jib:                     # long form — required as soon as any setting is present
     enabled: true
     container:
       mainClass: com.example.App
 ```
 
-Providing settings *without* `enabled: true` silently does **not** enable the plugin — Toolchain warns ("Plugin X is not enabled, but has some explicit configuration") and skips it. Always enable explicitly when any setting is present.
+Settings without `enabled: true` produce only a warning ("Plugin X is not enabled, but has some explicit
+configuration") and the plugin is skipped.
 
-### A vendored linter plugin can carry different defaults than the Gradle plugin
+### A vendored linter plugin can be stricter than the Gradle plugin
 
-A subprocess-launching linter plugin you vendor may enable stricter analysis than the Gradle plugin did, surfacing a wave of "new" violations the Gradle build silently ignored. Diff the flags the vendored plugin passes against what the Gradle plugin's default task passed, and add an opt-in setting for anything stricter so the default matches the old behaviour.
+Diff the flags the vendored plugin passes against the Gradle plugin's default task, and gate anything
+stricter behind an opt-in setting so the default matches the old behaviour.
 
-The canonical instance: the upstream detekt plugin (`amper/build-sources/detekt/`) passes `--classpath` to `detekt-cli` unconditionally, enabling **type resolution**, while Gradle's default `detekt` task does not. Used as-is it surfaces violations Gradle never reported (notably `UnreachableCode` on elvis-with-return patterns).
+The canonical case: the upstream detekt plugin (`amper/build-sources/detekt/`) always passes `--classpath` to
+`detekt-cli`, enabling type resolution, which Gradle's default `detekt` task does not. Used as-is it surfaces
+violations Gradle never reported (notably `UnreachableCode` on elvis-with-return). Fix: add
+`useTypeResolution: Boolean get() = false` to the plugin's Settings and gate the flag on it — patch in
+[references/examples.md](references/examples.md).
 
-**Fix**: add a `useTypeResolution: Boolean` setting (`get() = false`) to the plugin's `@Configurable Settings` and gate the `--classpath` flag on it. That matches Gradle parity by default; consumers who want the stronger checks opt in. See [references/examples.md](references/examples.md) for the full patch.
+### No version-catalog bundles
+
+Only `[libraries]` keys resolve (`$libs.<key>`). `$libs.bundles.<name>` does not exist and `[bundles]` in the
+catalog is dead config the Toolchain never reads. The official answer (KTC-4759) is a **module template** per
+bundle, applied wherever the bundle was used:
+
+```toml
+# gradle/libs.versions.toml — before
+[bundles]
+ktor-server = ["ktor-server-core", "ktor-server-netty", "ktor-server-content-negotiation"]
+```
+
+```yaml
+# ktor-server.module-template.yaml — at the project root; templates cannot declare product:
+dependencies:
+  - $libs.ktor.server.core
+  - $libs.ktor.server.netty
+  - $libs.ktor.server.content.negotiation
+
+settings:
+  kotlin:
+    serialization: json
+
+test-dependencies:
+  - $libs.ktor.server.test.host
+```
+
+```yaml
+# module.yaml
+product: jvm/app
+
+apply:
+  - //ktor-server.module-template.yaml
+```
+
+Templates are the better target, not just a workaround: a bundle carries coordinates only, while the
+framework it enables usually also needs `settings` (`kotlin.serialization`, `springBoot`, `freeCompilerArgs`),
+`test-dependencies`, and sometimes `repositories`. Put all of it in the template so one `apply:` line yields a
+working framework instead of a bare classpath.
+
+Rules that might bite:
+
+- Path notation is `//<name>.module-template.yaml`, relative to the project root (where `project.yaml` is).
+- No `product:` in a template. Templates may `apply:` other templates; each is applied once even if reached
+  through two paths, so list dependencies appear once.
+- Merge semantics: lists append, scalars are overridden, and `module.yaml` always wins regardless of where
+  `apply:` sits in the file.
+- Two sibling templates setting the same scalar (e.g. `settings.jvm.release`) is a hard error
+  ("Conflicting values for property"). Resolve by setting the value in the consuming `module.yaml`, or in a
+  third template that applies both.
+- Don't convert a single-consumer bundle. Templates pay off from the second module; below that, inline the
+  `$libs.*` list.
+- Templates express the union of platform-qualified sections too (`dependencies@jvm`, `settings@android`), so
+  a KMP bundle split across source sets still fits one template.
+
+### No `buildSrc` / convention plugins — shared config goes in templates
+
+`buildSrc/`, `build-logic/`, and `includeBuild(...)` have no counterpart, and `project.yaml` carries only
+`modules:` and `plugins:` — there is no root-project inheritance and nowhere to put imperative shared build
+logic. A local plugin is also the wrong target: plugins contribute *tasks*, they don't inject module
+configuration. A precompiled script plugin is mostly declarative, so it translates to one
+`<name>.module-template.yaml`, applied by the modules that used `plugins { id("<name>") }`:
+
+```kotlin
+// buildSrc/src/main/kotlin/service-conventions.gradle.kts
+plugins {
+    kotlin("jvm")
+    kotlin("plugin.serialization")
+}
+kotlin { jvmToolchain(21) }
+repositories { maven("https://jitpack.io") }
+dependencies {
+    implementation(libs.ktor.server.core)
+    testImplementation(libs.kotest.runner.junit5)
+}
+```
+
+```yaml
+# service-conventions.module-template.yaml
+settings:
+  jvm:
+    jdk:
+      version: 21
+  kotlin:
+    serialization: json
+
+repositories:
+  - id: jitpack
+    url: https://jitpack.io
+
+dependencies:
+  - $libs.ktor.server.core
+
+test-dependencies:
+  - $libs.kotest.runner.junit5
+```
+
+| Convention script construct | Template counterpart |
+|---|---|
+| `plugins { kotlin("jvm"), kotlin("plugin.serialization"), id("org.springframework.boot") }` | native `settings:` (`settings.kotlin.*`, `settings.springBoot`, …) |
+| `kotlin { jvmToolchain(21) }`, `java { targetCompatibility }` | `settings.jvm.jdk.version`, `settings.jvm.release` |
+| `dependencies { implementation / api / testImplementation }` | `dependencies:` (`: exported` for `api`) and `test-dependencies:` |
+| `repositories { }` | `repositories:` |
+| `tasks.withType<Test> { useJUnitPlatform() }` | built-in / `settings.junit` |
+| a convention script applying another convention script | nested templates (`apply:` inside the template) |
+| `allprojects {}` / `subprojects {}` in the root script | one template that every `module.yaml` applies |
+| `tasks.register(…)`, `doLast { }`, anything imperative | the residue — a local plugin, one per behavior |
+
+Also:
+
+- Delete `buildSrc/` outright. Its `libs` catalog accessors are replaced by `$libs.*` used directly in the
+  templates.
+- Splitting one fat convention script into several small templates (`jvm`, `ktor-server`, `testing`) is
+  usually the better shape, and bundle templates fold into the same hierarchy — see "No version-catalog
+  bundles" for the merge/conflict rules, which apply identically here.
+- Local-plugin enablement inside a template (a `plugins:` block in a `*.module-template.yaml`) is unverified.
+  If a convention script enabled a plugin you reimplemented, keep the `plugins:` block in each `module.yaml`
+  until you have confirmed the template form loads (`./kotlin show modules` plus an actual task run).
 
 ### No dependency exclusions
 
-Toolchain has no equivalent of Gradle's `exclude(group, module)` for transitive dependency exclusions. If the source build excluded e.g. `kotlinx-coroutines-core` from one of its dependencies, that exclusion silently disappears under Toolchain — the library lands on the runtime classpath. Document the trade-off in the PR (usually a few hundred KB of unused classes; rarely a behavioural issue) and move on.
+There is no equivalent of Gradle's `exclude(group, module)`. Any transitive exclusion silently disappears and
+the library lands on the runtime classpath. Note the trade-off in the PR (usually a few hundred unused KB).
 
 ### No plugin-to-plugin dependencies
 
-Plugins are isolated; one local plugin cannot declare a dependency on another local plugin in the same project. If two plugins logically belong together (e.g. a release plugin that writes the version, and the same plugin needs to publish that version in two formats), put both task actions in the same plugin module rather than splitting across two plugins.
+Plugins are isolated. If two plugins logically belong together, put both task actions in the same plugin
+module or extract the library.
 
 ### No `-P` / `-D` CLI overrides
 
-Toolchain has no Gradle-equivalent `-Pkey=value` or `-Dkey=value` for overriding plugin settings from the CLI, and you can't count on a `--setting` flag either (the pinned CLI may reject it outright). For ephemeral overrides (force-version, skip-checks, dynamic image tags), read environment variables inside the `@TaskAction`. See the `gradle-to-kotlin-toolchain-plugin` skill's "Architectural mismatches" section for the pattern.
+Read ephemeral overrides (force-version, skip-checks, dynamic image tags) from environment variables inside
+the `@TaskAction`; don't count on a `--setting` flag either (the pinned CLI may reject it). Pattern in the
+`gradle-to-kotlin-toolchain-plugin` skill.
 
-### Capturing a command's output value (`./kotlin do …` stdout is not a clean channel)
+### Capturing a command's output value
 
-A `@TaskAction`'s `println` is **not** a machine-readable channel. The toolchain renders task stdout inside a decorated log line — `<ts> INFO :<module>:<task>@<plugin> <value>` — and prints a trailing `<task> successful` banner, so `./kotlin do currentVersion | tail -n1` yields `currentVersion successful`, not the version (and lowering `--log-level` to `error`/`off` drops the value line entirely, since it is emitted at INFO). Capture a value robustly by either:
+`println` from a `@TaskAction` is not a machine-readable channel. The Toolchain wraps it as
+`<ts> INFO :<module>:<task>@<plugin> <value>` and appends a `<task> successful` banner, so
+`./kotlin do currentVersion | tail -n1` yields the banner — and lowering `--log-level` to `error`/`off` drops
+the value line entirely, since it is emitted at INFO. Instead:
 
-- **Reading a side channel the plugin writes** — have the task write the value to a file named by an env var (e.g. `RELEASE_VERSION_FILE`) and `cat` it. Most decoupled: the captured value matches what the plugin stamps into artifacts.
-- **Reading the git state the command produced** — for a release tag, `version=$(git describe --tags --exact-match HEAD)` then strip the prefix; no plugin-output parsing at all.
+- Have the task write the value to a file named by an env var and `cat` it. Moreover, other tasks can reuse this value down the line
+- Or read the git state the command produced: `git describe --tags --exact-match HEAD`.
+- If you must parse stdout, match the task coordinate: `awk '/<task>@<plugin>/ { v = $NF } END { print v }'`.
 
-If you must parse stdout, match the task-coordinate line instead of taking the last one: `awk '/<task>@<plugin>/ { v = $NF } END { print v }'`.
+### Test resources shadow `generated.resources`
 
-### Test resource conflicts with `generated.resources`
-
-When a local plugin emits a file via `generated.resources` *and* the project has a test fixture at the same classpath path (e.g. plugin writes `release.properties` to main; `src/test/resources/release.properties` overrides with a known-test-version value), the JVM's classpath ordering puts test resources first — the fixture wins during tests. This usually works correctly but is brittle. If a test asserts on a specific value, prefer injecting a stub service over relying on classpath precedence.
+When a plugin emits `release.properties` and `src/test/resources/release.properties` exists, classpath
+ordering puts the test fixture first. It usually does the right thing but is brittle — if a test asserts a
+specific value, inject a stub service instead of relying on precedence.
 
 ### Dependabot needs a stub `build.gradle.kts`
 
-Dependabot's gradle-ecosystem file fetcher requires a `build.gradle` or `build.gradle.kts` in the configured directory before it will scan `gradle/libs.versions.toml` for updates. Without it, `package-ecosystem: "gradle"` silently no-ops. Keep an **empty** `build.gradle.kts` at the project root with a comment explaining why:
+Dependabot's gradle file fetcher requires a `build.gradle(.kts)` in the configured directory before it scans
+`gradle/libs.versions.toml`; without one, `package-ecosystem: "gradle"` silently no-ops. Keep an empty
+`build.gradle.kts` at the root with a comment explaining why. The Toolchain ignores it.
 
-```kotlin
-// Intentionally empty. This project is built with the Kotlin Toolchain;
-// `gradle/libs.versions.toml` is the dependency catalog (consumed natively).
-// This stub exists so GitHub Dependabot's `package-ecosystem: gradle` detector
-// discovers the project. See `.github/dependabot.yml`.
-```
+### amd64-only container images on Apple Silicon
 
-The Toolchain ignores this file entirely.
+Images like `mongo:3.2` crash under Rosetta/QEMU on M-series Macs
+(`runtime: failed to create new OS thread (have 2 already; errno=22)`). Unchanged by the migration — the same
+image fails under `./gradlew check`. Flag it as pre-existing; CI on `ubuntu-latest` is unaffected.
 
-### amd64-only container images won't run on Apple Silicon
+### iOS (KMP): a migrated `Info.plist` loses its `CFBundle*` keys
 
-Older images pinned by testcontainers (e.g. `mongo:3.2`) are amd64-only and crash immediately under Rosetta/QEMU on M-series Macs (`runtime: failed to create new OS thread (have 2 already; errno=22)`). This is **unchanged by the migration** — the same image fails identically under `./gradlew check`. Flag it in the PR's Test plan as a pre-existing host incompatibility, not a regression. CI on `ubuntu-latest` (amd64) is unaffected.
-
-### iOS (KMP): a migrated `Info.plist` loses its `CFBundle*` keys → app won't install
-
-A Gradle/KMP iOS app keeps its bundle metadata in the hand-maintained `iosApp.xcodeproj`, **not** in `Info.plist`. The KMP wizard sets `GENERATE_INFOPLIST_FILE = YES` and `PRODUCT_BUNDLE_IDENTIFIER = …` in the pbxproj, so Xcode *synthesizes* the `CFBundle*` keys at build time (`CFBundleIdentifier` from `PRODUCT_BUNDLE_IDENTIFIER`, `CFBundleExecutable` from `EXECUTABLE_NAME`, …) and merges them with the checked-in `Info.plist`. That plist is therefore intentionally **partial** — it carries only extras (usage descriptions, launch storyboard) and often has no `CFBundleIdentifier` at all.
-
-Toolchain does **not** consume the existing `.xcodeproj`. It generates its own `module.xcodeproj` and uses your `Info.plist` verbatim (via `INFOPLIST_FILE`, **without** `GENERATE_INFOPLIST_FILE`), writing its own complete default plist *only* when none exists. So the migrated partial plist survives, nothing synthesizes the `CFBundle*` keys, and the built `.app` has no bundle id:
+A Gradle/KMP iOS app keeps bundle metadata in the hand-maintained `iosApp.xcodeproj`
+(`GENERATE_INFOPLIST_FILE = YES`), so Xcode synthesizes `CFBundle*` keys and the checked-in `Info.plist` is
+intentionally partial. The Toolchain ignores that `.xcodeproj`, generates its own, and uses your plist
+verbatim — nothing synthesizes the keys, and the `.app` has no bundle id:
 
 ```
 Simulator device failed to install the application. Missing bundle ID.
 ```
 
-A fresh `kotlin init` iOS app doesn't hit this (Toolchain writes a complete default plist), which is why it surfaces only on migration.
-
-**Fix**: make the module's `Info.plist` self-contained — add the standard `CFBundle*` keys (the values reference build settings Toolchain already sets), keeping your app-specific keys alongside them:
+Fix: make the plist self-contained, keeping your app-specific keys alongside these:
 
 ```xml
 <key>CFBundleDevelopmentRegion</key><string>$(DEVELOPMENT_LANGUAGE)</string>
@@ -225,61 +365,40 @@ A fresh `kotlin init` iOS app doesn't hit this (Toolchain writes a complete defa
 <key>CFBundleVersion</key><string>1</string>
 ```
 
-(`PRODUCT_BUNDLE_IDENTIFIER` is set on the generated target, so `$(PRODUCT_BUNDLE_IDENTIFIER)` resolves.) See the `kotlin-toolchain` skill's "iOS apps" section for the underlying generate-project behavior.
+`PRODUCT_BUNDLE_IDENTIFIER` is set on the generated target. Underlying behaviour: the `kotlin-toolchain`
+skill's "iOS apps" section.
 
-### KMP: carry over *every* source set's dependencies — don't drop "belongs-elsewhere-looking" ones
+### KMP: carry over every source set's dependencies
 
-A Gradle KMP module declares dependencies per source set (`commonMain`, `jvmMain`, `androidMain`, `iosMain`, `commonTest`, `jvmTest`, …). **Each block must be carried over to the matching Amper section** — `dependencies` (common), `dependencies@jvm` / `@android` / `@ios` (platform), `test-dependencies`, `test-dependencies@<platform>`. Translate the source sets exhaustively; do not cherry-pick the "obvious library" deps. Two facts make silent drops costly:
+Translate each Gradle source set (`commonMain`, `jvmMain`, `androidMain`, `iosMain`, `commonTest`, `jvmTest`,
+…) into its Amper counterpart — `dependencies`, `dependencies@jvm`/`@android`/`@ios`, `test-dependencies`,
+`test-dependencies@<platform>`. Don't cherry-pick the obvious library deps:
 
-- **A `*Main` dependency is also on that target's *test* classpath.** In KMP, `jvmTest` extends `jvmMain`, so an `implementation(...)` in `jvmMain` is visible to JVM tests. Dropping a `*Main` dep can remove something the tests silently relied on — with no compile error, only a runtime failure.
-- **A dependency can look like it belongs to another module but be load-bearing here.** Canonical case: `jvmMain { implementation(compose.desktop.currentOs) }` in a *shared library*. It reads like a desktop-app dependency (easy to drop when there's a separate desktop-app module), but it supplies the **Skiko native runtime** (`skiko-awt-runtime-<os>`, which carries `libskiko-<os>.dylib` + its `.sha256`) that the module's own **JVM Compose UI tests** (`compose.uiTest` / `runComposeUiTest`) load at runtime.
+- A `*Main` dependency is also on that target's test classpath (`jvmTest` extends `jvmMain`), so dropping one
+  can break tests with no compile error.
+- A dependency can look like it belongs to another module and still be load-bearing. Canonical case:
+  `jvmMain { implementation(compose.desktop.currentOs) }` in a shared library reads like a desktop-app dep,
+  but it supplies the Skiko native runtime (`skiko-awt-runtime-<os>` with `libskiko-<os>.dylib` + `.sha256`)
+  that the module's own JVM Compose UI tests (`compose.uiTest` / `runComposeUiTest`) load at runtime.
+  `compose.ui:ui-test` pulls only Skiko's classes, never the natives. Dropping it compiles fine, then fails
+  with:
 
-Dropping `compose.desktop.currentOs` compiles fine, then JVM Compose UI tests crash at runtime with a cryptic:
+  ```
+  org.jetbrains.skiko.LibraryLoadException: Cannot find libskiko-macos-arm64.dylib.sha256, proper native dependency missing.
+  ```
 
-```
-org.jetbrains.skiko.LibraryLoadException: Cannot find libskiko-macos-arm64.dylib.sha256, proper native dependency missing.
-```
+  Not a Toolchain bug: Gradle fails identically without it. Restore under `dependencies@jvm`, or scope it to
+  `test-dependencies@jvm` to keep Skiko natives off consumers' classpaths.
 
-This is **not** a Toolchain bug — a Gradle build fails identically without it (`compose.ui:ui-test` pulls only Skiko's *classes*, never the native runtime; the natives come from the desktop artifact). It was simply not carried over. Restore it under `dependencies@jvm`, matching where Gradle had it:
-
-```yaml
-dependencies@jvm:
-  - $compose.desktop.currentOs
-```
-
-Or, cleaner for a library (keeps Skiko natives off consumers' classpaths), scope it to tests:
-
-```yaml
-test-dependencies@jvm:
-  - $compose.desktop.currentOs
-```
-
-**Guard against drops:** after writing `module.yaml`, diff each Gradle source set's dependency list against its Amper counterpart (names + count), and run `./kotlin show dependencies -m <module>` to confirm the resolved graph matches the Gradle build's per-configuration dependencies. Anything present in a Gradle `*Main`/`*Test` block but absent from the corresponding Amper section is a bug until proven otherwise.
-
-## What goes in the PR
-
-A whole-project migration PR is large; a clear description shortens review by hours. Sections to include:
-
-1. **Summary** — one paragraph stating "replaces Gradle build with Kotlin Toolchain", followed by the plugin layout (n local plugins, what each replaces).
-2. **What's preserved** — the catalog, `detekt.yml`, business-logic source files. Reviewers want to confirm the migration isn't a covert rewrite.
-3. **What replaces what** — a 1:1 mapping table of `./gradlew <task>` → `./kotlin <command>`. Also include the build-script-to-yaml summary.
-4. **Test plan** — every command you ran in Phase 5, with expected output. Mark items that only CI can exercise (testcontainers, full check pipeline) so reviewers know where local validation ends.
-5. **Notes / follow-ups** — items deliberately out of this PR (often: bumping deprecated container images, grouping more Dependabot entries, deferring publish-to-Maven of plugins). Keep this PR focused; chase follow-ups separately.
+Guard against drops: diff each Gradle source set's dependency list against its Kotlin Toolchain section (names and
+count), then run `./kotlin show dependencies -m <module>` and compare with the Gradle build.
 
 ## Common pitfalls
 
-- **Pushing without the `package` plugin.** A whole-project migration that forgets a stable artifact path leaves CI uploading `build/artifacts/CompiledJvmArtifact/` (Toolchain's internal class-file tree) instead of a JAR. Always add a `package` plugin before swapping the artifact upload path.
-- **`./kotlin check` hangs locally on testcontainers.** `kotlin check` includes `kotlin test`, which spins up testcontainers, which may not work on the developer's host. For local validation, prefer running individual plugin tasks (`./kotlin task :<module>:check@ktlint`, `./kotlin task :<module>:analyze@detekt`) plus `./kotlin build` rather than the full `check`.
-- **Forgetting `enabled: true`.** If a plugin shows up under `./kotlin show modules` but its task never runs, check that the consumer's `module.yaml` has `enabled: true` (not just plugin settings — settings without `enabled` are silently ignored).
-- **Committing `build/`.** `kotlin build` creates `build/`. Add it to `.gitignore` early (drop the old `.gradle/` entry, add `build/` if not already there).
-- **Cycle detected on `writeVersion`.** If the release plugin is enabled on the *root* module (where `${module.rootDir}` is the project root that contains `build/`), Toolchain's dependency inference may treat all build outputs as inputs of any task that takes `@Input moduleRootDir: Path`. Patch the release plugin's `moduleRootDir` parameters with `@Input(inferTaskDependency = false)`.
-- **Hardcoded tool versions in plugin YAMLs.** Vendoring drops literal versions (the linter CLIs, the image-builder library, JGit, etc.) into `module.yaml`/`plugin.yaml`. Sweep every one into `gradle/libs.versions.toml` and use `$libs.*` references; otherwise Dependabot can't track them.
-- **String interpolation into Maven coordinates.** `plugin.yaml` does not allow `${pluginSettings.version}` *inside* a Maven coordinate string (`com.example:foo:${...}` fails with "Value of type 'ShadowDependency' doesn't support string interpolation"). Either hardcode the version in `plugin.yaml` or use a catalog reference (`$libs.foo`).
+- **No `package` plugin.** CI ends up uploading `build/artifacts/CompiledJvmArtifact/` (an internal class-file
+  tree) instead of a JAR. Add the plugin before swapping the upload path.
+- **Committing `build/`.** Add it to `.gitignore` early; drop the old `.gradle/` entry.
+- **String interpolation inside Maven coordinates.** `com.example:foo:${pluginSettings.version}` in
+  `plugin.yaml` fails with "Value of type 'ShadowDependency' doesn't support string interpolation". Use `$libs.foo`.
 
-## Additional resources
-
-- For concrete code patterns (root `module.yaml`, multi-plugin `project.yaml`, a minimal `package` plugin, CI workflow templates, the `useTypeResolution` patch), see [references/examples.md](references/examples.md).
-- For per-plugin port specifics (the concept-mapping table, MVP scoping, file-based publication), use the companion `gradle-to-kotlin-toolchain-plugin` skill.
-- For writing a plugin from scratch (the `package` plugin or any other), use `kotlin-toolchain-plugin-authoring`.
-- For Toolchain syntax reference, use `kotlin-toolchain`.
-- Toolchain docs: <https://kotlin-toolchain.org/dev/>
+Kotlin Toolchain docs: <https://kotlin-toolchain.org/dev/>

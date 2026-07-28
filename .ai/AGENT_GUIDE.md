@@ -1,53 +1,56 @@
 # Agent guide
 
-This file provides guidance to coding agents (Claude Code, Codex, etc.) when working with code in this repository.
-
 ## Repository purpose
 
-This repo authors **Claude Code skills** for working with [Kotlin Toolchain](https://kotlin-toolchain.org/dev/) (JetBrains' unified Kotlin CLI; the build engine inside it is Amper). It is not itself a Kotlin project — there is no build system, no tests, and no source code to compile. Each skill is a markdown file that Claude Code loads when its trigger matches.
+Authors agent skills for [Kotlin Toolchain](https://kotlin-toolchain.org/dev/) (JetBrains' unified Kotlin
+CLI; Amper is the build engine inside it). There is no build system, no tests, and no source to compile —
+only markdown.
 
 ## Layout
 
 ```
 skills/
 └── <skill-name>/
-    └── SKILL.md
+    ├── SKILL.md              # frontmatter + body
+    └── references/           # optional; loaded on demand
+        └── examples.md
 ```
 
-One skill currently lives here: `skills/kotlin-toolchain/SKILL.md`.
+Four skills: `kotlin-toolchain`, `kotlin-toolchain-plugin-authoring`, `gradle-to-kotlin-toolchain-plugin`,
+`gradle-to-kotlin-toolchain-project`.
 
-## SKILL.md structure
-
-Each `SKILL.md` is a markdown file with YAML frontmatter:
+## Frontmatter
 
 ```yaml
 ---
-name: <skill-name>           # must match the folder name
-description: <one paragraph> # see "Description conventions" below
+name: <skill-name>    # must match the folder name
+description: <one paragraph>
 ---
 ```
 
-The body is plain markdown — the prose Claude reads when the skill activates.
+The `description` is what the harness sees when deciding whether to activate the skill. Convention:
 
-### Description conventions
+- Lead with what the skill teaches ("How to build, run, test, package…").
+- **TRIGGER** clauses: file markers, user phrasings, identifiers that should fire it.
+- **SKIP** clauses: nearby cases another skill owns.
 
-The `description` field is what the harness shows to Claude when deciding whether to invoke the skill. Existing convention here:
-
-- Lead with **what the skill teaches** (e.g. "How to build, run, test, package…").
-- Include explicit **TRIGGER** clauses listing file markers, user phrasings, and tools that should fire the skill (e.g. `project.yaml`, `module.yaml`, `./kotlin` wrapper).
-- Include explicit **SKIP** clauses for nearby-but-distinct cases the skill should *not* handle (e.g. "SKIP for Gradle/Maven Kotlin projects").
-
-The TRIGGER/SKIP pattern matters: it's what prevents the skill from firing on the wrong projects. Preserve this style when editing or adding skills.
+Keep TRIGGER/SKIP coverage even when trimming prose — it's what stops the skill firing on the wrong project.
 
 ## Editing skills
 
-- Edit `SKILL.md` directly; there is no codegen or build step.
-- Keep instructions prescriptive and decision-oriented — the skill body is read in full when activated, so it should answer "what should Claude do next?" rather than catalog every Kotlin Toolchain feature.
-- The current `kotlin-toolchain` skill encodes specific opinions (e.g. "do not propose switching to Gradle", "implement build-time codegen as a local plugin, not by hand-writing the output"). Honor and extend that opinionated tone rather than softening it into neutral reference material.
+- Edit the markdown directly; there is no codegen step.
+- Keep instructions prescriptive and decision-oriented: "what should the agent do next?", not a catalog of
+  Toolchain features.
+- Honor the existing opinions ("do not propose switching to Gradle", "implement build-time codegen as a
+  local plugin, not by hand-writing the output"). Don't soften them into neutral reference material.
+- One fact, one home. If something already lives in another skill, link to that skill by name in a clause,
+  don't restate it. `kotlin-toolchain` owns project syntax; `kotlin-toolchain-plugin-authoring` owns plugin
+  mechanics; the two `gradle-to-*` skills own only their conversion deltas.
+- Prose rules: no sentences about the document itself, no sentences explaining why the previous sentence is
+  useful, imperative mood, ≤1 bold span per bullet, no restating a code block in a "Key points" list.
+- Never paraphrase error strings, flags, env-var names, Maven coordinates, or YAML keys.
 
 ## Reference
-
-Kotlin Toolchain docs and source (used when extending the skill):
 
 - Docs: <https://kotlin-toolchain.org/dev/>
 - Source: <https://github.com/JetBrains/kotlin-toolchain>
