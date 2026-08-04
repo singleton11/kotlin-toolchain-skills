@@ -104,6 +104,40 @@ Notes:
 Version catalogs use the standard Gradle `libs.versions.toml` format, referenced as `$libs.<key>`.
 Built-in catalogs `$kotlin.*` and `$compose.*` derive their versions from `settings`.
 
+## Templates
+
+A template extracts reusable `module.yaml` sections into a `<name>.module-template.yaml` file (same
+structure as `module.yaml`) that modules pull in via an `apply:` list of relative paths. It's a general
+reuse mechanism — sharing project-wide config is just one use.
+
+Because there is no project-wide `settings:` block, templates are the only way to share configuration
+(Kotlin language version, common test dependencies, repositories, …) across modules. `apply:` one template
+everywhere for project-wide defaults, or keep several templates and apply different combinations to
+different subsets of modules — e.g. a common template in every module plus a service-only template in the
+backend modules. A module can list multiple templates under `apply:`.
+
+```yaml
+# common.module-template.yaml
+test-dependencies:
+  - io.mockk:mockk:1.13.0
+settings:
+  kotlin:
+    languageVersion: 2.0
+```
+
+```yaml
+# module.yaml
+product: jvm/app
+apply:
+  - ../common.module-template.yaml
+  - ../jvm-service.module-template.yaml
+```
+
+- Templates can't have `product:` or `apply:` sections — a template can't apply another template (no
+  recursion) and can't define products.
+- Applied one by one, with `module.yaml`'s own values last: scalars are overridden, lists and mappings
+  appended, and `module.yaml` always wins regardless of `apply:` position.
+
 ## Checks and linters
 
 `kotlin check` runs all tests plus every registered check. Filter by name (`kotlin check detekt apiCheck`),
