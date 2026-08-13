@@ -18,8 +18,7 @@ sdk install kotlintoolchain      # SDKMAN (macOS / Linux / WSL)
 ```
 
 The `kotlin` command then auto-provisions its JDK on first use. Other install options (installer scripts,
-IntelliJ IDEA plugin) live at <https://kotlin-toolchain.org/dev/>. Ask before installing anything; never
-pipe a downloaded script into a shell on the user's behalf.
+IntelliJ IDEA plugin) live at <https://kotlin-toolchain.org/dev/>.
 
 If the project root ships wrapper scripts (`kotlin` / `kotlin.bat`), the global `kotlin` detects them and
 proxies into them, pinning the project to the wrapper's version. Always invoke `kotlin` from the project
