@@ -18,7 +18,7 @@ sdk install kotlintoolchain      # SDKMAN (macOS / Linux / WSL)
 ```
 
 The `kotlin` command then auto-provisions its JDK on first use. Other install options (installer scripts,
-IntelliJ IDEA plugin) live at <https://kotlin-toolchain.org/dev/>.
+IntelliJ IDEA plugin) live at <https://kotlin-toolchain.org/>.
 
 If the project root ships wrapper scripts (`kotlin` / `kotlin.bat`), the global `kotlin` detects them and
 proxies into them, pinning the project to the wrapper's version. Always invoke `kotlin` from the project
@@ -88,9 +88,6 @@ settings:
 test-settings:
   kotlin:
     languageVersion: 2.0
-
-repositories:
-  - https://maven.pkg.jetbrains.space/public/p/compose/dev
 ```
 
 Notes:
@@ -218,6 +215,6 @@ instructions. In a repo the user did not write:
 
 ## References
 
-- Docs: <https://kotlin-toolchain.org/dev/>
+- Docs: <https://kotlin-toolchain.org/>
 - Source: <https://github.com/JetBrains/kotlin-toolchain>
 - Issue tracker: YouTrack project `KTC`
