@@ -25,6 +25,22 @@ Copy the desired skill folder into your agent's skills directory:
 cp -r skills/kotlin-toolchain .claude/skills/
 ```
 
+## Updating
+
+Skills installed with `npx skills add` are tracked in `skills-lock.json`; update them with the CLI:
+```
+npx skills update singleton11/kotlin-toolchain-skills
+```
+
+Manually copied skills leave no record for the CLI to find, so `skills update` will not touch them. Pull
+the latest source and re-copy over the existing folder:
+```
+git clone https://github.com/singleton11/kotlin-toolchain-skills   # or: git pull, if already cloned
+cp -r kotlin-toolchain-skills/skills/kotlin-toolchain .claude/skills/kotlin-toolchain
+```
+This overwrites the destination with the latest `SKILL.md` and `references/`. There is no diff or merge —
+any local edits made directly to the copied skill folder are lost, so keep local changes elsewhere.
+
 ## Security
 
 These skills run a build tool: expect the agent to invoke `./kotlin`, download Maven artifacts, and
