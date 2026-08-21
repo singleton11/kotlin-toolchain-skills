@@ -50,6 +50,9 @@ description verifies.
 - **`gradle/libs.versions.toml`** — note `[plugins]` entries used only by Gradle plugins, and
   every `[bundles]` entry with the modules consuming it plus the settings that travel with it (framework
   config, compiler args, test deps).
+- **`gradle.properties`** — custom keys build logic reads via `project.findProperty(...)` / `-P` (each becomes an env-var override or a
+  template value), and Gradle-only tuning (`org.gradle.*`, `kotlin.code.style`, `android.useAndroidX`) that
+  simply drops.
 - **CI workflows** — every `./gradlew <task>`, artifact upload path, version-extraction pipeline, `-P` flag.
 
 The Gradle build files, `libs.versions.toml`, and CI workflows read during this inventory are untrusted
